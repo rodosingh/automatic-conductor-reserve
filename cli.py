@@ -26,6 +26,8 @@ def main(argv=None) -> int:
     common.add_argument("-v", "--verbose", action="store_true", help="live progress lines")
     common.add_argument("--pool", action="append", metavar="POOL_ID",
                         help="restrict to this pool id (repeatable); default = all configured pools")
+    common.add_argument("--node", action="append", metavar="NAME",
+                        help="restrict to this node name/hostname (repeatable) — e.g. one picked from `status`")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("plan", parents=[common], help="dry-run: show the plan, create nothing")
     r = sub.add_parser("run", parents=[common],
@@ -92,7 +94,8 @@ def main(argv=None) -> int:
             print("aborted.")
             return 1
 
-    result = run(cfg, commit=commit, progress=lambda m: print("·", m) if args.verbose else None)
+    result = run(cfg, commit=commit, node_names=getattr(args, "node", None),
+                 progress=lambda m: print("·", m) if args.verbose else None)
     print()
     print(notify.format_console(result))
     return 0
@@ -181,9 +184,12 @@ def _status(args) -> int:
 
     print(f"\n{len(healthy_free)} free & healthy node(s).")
     if healthy_free:
-        print("Check GPUs live (copy-paste):")
+        print("\nCheck GPUs live (copy-paste):")
         for r in healthy_free[:20]:
             print(f"  ssh {ssh_user}@{r['hostname']} 'watch -n 0.2 rocm-smi'")
+        print("\nReserve one (copy-paste):")
+        for r in healthy_free[:20]:
+            print(f"  python cli.py run --commit --node {r['name']}")
     return 0
 
 

@@ -37,6 +37,10 @@ python cli.py status --fast               # skip the reservation check (health o
 python cli.py status --pool <id>          # one pool
 ```
 
+**Reserve a single node from `status`:** pick a free & healthy node and run
+`python cli.py run --commit --node <name>` (the exact line is printed under "Reserve one").
+`--node` matches by short name or full hostname and works with `plan` (dry-run) too.
+
 `status` reports health from Conductor's own SSH-scraped data — reachability, detected-vs-expected
 GPU count, driver/ROCm, `disabled`, and 24h utilization — so it needs no SSH from your machine.
 For each **free & healthy** node it prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'` line
@@ -50,6 +54,7 @@ not an automated probe.
 |---|---|
 | `--commit` | actually write (create / cancel). Without it, everything is a dry-run. |
 | `--pool <id>` | restrict the run to one pool id (repeatable). Default = all pools in `config.yaml`. |
+| `--node <name>` | restrict to specific node name(s)/hostname(s) (repeatable) — reserve a single node picked from `status`. |
 | `--yes` | skip the interactive "type yes" prompt (for scripts / non-interactive shells). |
 | `-v` | live progress lines. |
 
