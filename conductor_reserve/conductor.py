@@ -284,28 +284,33 @@ class ConductorClient:
                 break
         return out
 
-    def active_reservations(self, node_id: str, at=None) -> list[dict]:
-        """Reservations active on a node at a given time (default now): title, end, users.
-        Read-only. Used to show WHO holds a currently-reserved node."""
-        from datetime import datetime, timezone
+    def reservations_window(self, node_id: str, start: datetime, end: datetime) -> list[dict]:
+        """Raw reservations on a node overlapping [start, end]: id, title, start, end, user
+        emails. One query; used to derive free/busy AND 'mine'. Read-only."""
         from conductor_sdk.resources.reservations.queries import ReservationQuerier
         from ats_models.pydantic.conductor_query import DateLookup
-        at = at or datetime.now(timezone.utc)
         res = ReservationQuerier().lookup_advanced(
             entity=[str(node_id)],
-            date_start=[DateLookup(value=at, operation="lte")],
-            date_end=[DateLookup(value=at, operation="gt")],
-            page_size=25)
-        page = res.next()
+            date_end=[DateLookup(value=start, operation="gt")],
+            date_start=[DateLookup(value=end, operation="lt")],
+            page_size=50)
         out = []
-        for r in (getattr(page, "data", None) or []):
-            d = r.model_dump()
-            out.append({
-                "title": d.get("title"),
-                "date_end": str(d.get("date_end")),
-                "users": [(u.get("email") if isinstance(u, dict) else None)
-                          for u in (d.get("users") or [])],
-            })
+        pages = 0
+        while pages < 40:
+            page = res.next()
+            if page is None:
+                break
+            for r in (getattr(page, "data", None) or []):
+                d = r.model_dump()
+                s, e = d.get("date_start"), d.get("date_end")
+                if s and e:
+                    out.append({"id": str(d.get("id")), "title": d.get("title"),
+                                "date_start": _aware(s), "date_end": _aware(e),
+                                "users": [(u.get("email") if isinstance(u, dict) else None)
+                                          for u in (d.get("users") or [])]})
+            pages += 1
+            if getattr(page, "last_page", True):
+                break
         return out
 
     def add_users_to_reservation(self, reservation_id: str, user_ids: list[str]) -> None:

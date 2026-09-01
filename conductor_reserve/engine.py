@@ -22,6 +22,18 @@ def _norm(hostname: str) -> str:
     return str(hostname).strip().split(".")[0].lower()
 
 
+def _merge_iv(intervals):
+    """Merge overlapping (start, end) intervals; return sorted list."""
+    intervals = sorted(intervals)
+    merged = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
 def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient] = None,
         progress=None, node_names: Optional[list] = None) -> RunResult:
     """Execute one planning (and optionally committing) run.
@@ -198,8 +210,7 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
 
 
 def status_report(config: dict, *, client: Optional[ConductorClient] = None,
-                  check_reservations: bool = True, with_holder: bool = False,
-                  progress=None) -> list[dict]:
+                  check_reservations: bool = True, progress=None) -> list[dict]:
     """Read-only 'free & healthy' report for every eligible node across configured pools.
 
     Health comes from Conductor's scraped data; free/busy from the live reservation list.
@@ -215,6 +226,7 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
     policy = config.get("policy", {})
     min_gpus = int(policy.get("min_gpus", 2))
     now = datetime.now(timezone.utc)
+    my_email = (client.me().get("email") or "").lower()
     rows: list[dict] = []
     for entry in config["pools"]:
         pool = client.get_pool(entry["id"])
@@ -231,18 +243,30 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
             h["reserved_now"] = None
             h["free_for_h"] = None
             h["free_at"] = None
+            h["reserved_by_me"] = False
+            h["mine"] = []
             if check_reservations:
-                busy = client.busy_intervals(h["id"], now, now + timedelta(hours=48))
-                active = [b for b in busy if b[0] <= now < b[1]]
+                resv = client.reservations_window(h["id"], now, now + timedelta(hours=48))
+                intervals = _merge_iv([(r["date_start"], r["date_end"]) for r in resv])
+                active = [iv for iv in intervals if iv[0] <= now < iv[1]]
                 h["reserved_now"] = bool(active)
                 if active:
-                    h["free_at"] = max(b[1] for b in active).isoformat()
-                    if with_holder:
-                        h["holders"] = client.active_reservations(h["id"], now)
+                    h["free_at"] = max(iv[1] for iv in active).isoformat()
                 else:
-                    upcoming = [b[0] for b in busy if b[0] > now]
+                    upcoming = [iv[0] for iv in intervals if iv[0] > now]
                     h["free_for_h"] = ((min(upcoming) - now).total_seconds() / 3600.0
                                        if upcoming else float("inf"))
+                # which of these are mine (creator/member by email)?
+                mine = [r for r in resv
+                        if my_email in [(e or "").lower() for e in r["users"]]]
+                if mine:
+                    mine.sort(key=lambda r: r["date_start"])
+                    h["reserved_by_me"] = True
+                    h["mine"] = [{"title": r["title"],
+                                  "date_start": r["date_start"].isoformat(),
+                                  "date_end": r["date_end"].isoformat(),
+                                  "active": r["date_start"] <= now < r["date_end"]}
+                                 for r in mine]
             h["free_and_healthy"] = bool(h["healthy"] and h["reserved_now"] is False)
             rows.append(h)
     return rows
