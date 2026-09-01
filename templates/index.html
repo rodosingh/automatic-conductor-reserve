@@ -113,6 +113,46 @@
     {% endif %}
   </div>
 
+  <div class="card">
+    <div class="kv"><b>Sync default users onto existing reservations</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Adds the config's default users to every ongoing + upcoming reservation titled
+      "{{ config.title }}". Additive only (mode <code>add</code>) — never removes anyone; idempotent.
+    </div>
+    <div class="row">
+      <form action="{{ url_for('sync_users_route') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find (no update)</button>
+      </form>
+      <form action="{{ url_for('sync_users_route') }}" method="post" onsubmit="return confirm('Add the default users to all matching reservations?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> add users</label>
+        <button class="btn btn-commit" {% if running %}disabled{% endif %}>👥 Add default users</button>
+      </form>
+    </div>
+    {% if sync %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ sync.reservations|length }} ongoing/upcoming reservation(s) titled "{{ sync.title }}"{% if sync.committed %} — updated {{ sync.reservations|selectattr('status','equalto','updated')|list|length }}{% endif %}</b>
+          {% if sync.unresolved %}<span class="pill failed" style="margin-left:8px">unresolved: {{ sync.unresolved|join(', ') }}</span>{% endif %}
+        </div>
+        <div class="mut" style="font-size:12px;margin-top:4px">ensuring {{ sync.user_ids|length }} default user(s) on each</div>
+        {% if sync.reservations %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Start</th><th>End</th><th>Users now</th><th>ID</th><th>Status</th></tr></thead>
+          <tbody>
+          {% for r in sync.reservations[:60] %}
+            <tr><td>{{ r.date_start[:16] }}</td><td>{{ r.date_end[:16] }}</td>
+                <td class="mut">{{ r.users|length }}</td><td class="mut">{{ r.id }}</td>
+                <td>{% if r.status == 'updated' %}<span class="pill created">updated</span>
+                    {% elif r.status == 'failed' %}<span class="pill failed">failed</span>
+                    {% else %}<span class="pill planned">found</span>{% endif %}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if sync.reservations|length > 60 %}<div class="mut" style="font-size:12px;margin-top:6px">… +{{ sync.reservations|length - 60 }} more</div>{% endif %}
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">No matching reservations found.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
   {% if result %}
     {% set s = result.summary() %}
     <div class="card">
