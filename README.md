@@ -43,7 +43,7 @@ cp config.example.yaml config.yaml     # then edit: team_name, users, pool ids, 
 python cli.py whoami                 # verify auth + list your teams
 python cli.py status                 # which nodes are free & healthy (read-only report)
 python cli.py status --free          # only free & healthy + copy-paste rocm-smi / reserve cmds
-python cli.py status --reserved      # only reserved nodes: who holds them + until when
+python cli.py status --reserved      # only nodes YOU have reserved (ongoing + upcoming)
 python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
 python cli.py run --commit           # create the reservations (asks for a typed 'yes')
 python cli.py run --commit --node N  # reserve a single node picked from `status`

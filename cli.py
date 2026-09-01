@@ -149,23 +149,24 @@ def _status(args) -> int:
     if args.reserved and args.fast:
         print("--reserved needs the reservation check; ignoring --fast.")
         args.fast = False
-    rows = status_report(cfg, check_reservations=not args.fast, with_holder=args.reserved,
+    rows = status_report(cfg, check_reservations=not args.fast,
                          progress=lambda m: print("·", m) if args.verbose else None)
     if args.free:
         rows = [r for r in rows if r["free_and_healthy"]]
 
     if args.reserved:
-        rows = [r for r in rows if r["reserved_now"]]
-        print(f"{'node':26} {'pool':22} {'gpu':>7} {'until (UTC)':16} {'held by':24} title")
+        # nodes YOU have reserved (ongoing + upcoming within 48h)
+        rows = [r for r in rows if r["reserved_by_me"]]
+        print(f"{'node':26} {'pool':22} {'gpu':>5} {'your hold (UTC)':29} {'#':>2} {'state':8} title")
         print("-" * 104)
-        for r in sorted(rows, key=lambda r: (r["free_at"] or "", r["name"])):
-            h = (r.get("holders") or [{}])[0]
-            users = [u for u in (h.get("users") or []) if u]
-            who = (users[0] + (f" +{len(users) - 1}" if len(users) > 1 else "")) if users else "?"
-            print(f"{r['name'][:26]:26} {r['pool'][:22]:22} "
-                  f"{r['gpu_detected']}/{r['gpu_expected']:<5} {(r['free_at'] or '')[5:16]:16} "
-                  f"{who[:24]:24} {str(h.get('title') or '')[:24]}")
-        print(f"\n{len(rows)} currently-reserved node(s).")
+        for r in sorted(rows, key=lambda r: (r["mine"][0]["date_start"], r["name"])):
+            mine = r["mine"]
+            start = mine[0]["date_start"][5:16]
+            end = max(m["date_end"] for m in mine)[5:16]
+            state = "ACTIVE" if any(m["active"] for m in mine) else "upcoming"
+            print(f"{r['name'][:26]:26} {r['pool'][:22]:22} {r['gpu_detected']}/{r['gpu_expected']:<3} "
+                  f"{start+' -> '+end:29} {len(mine):>2} {state:8} {str(mine[0]['title'] or '')[:22]}")
+        print(f"\n{len(rows)} node(s) reserved by you (ongoing + upcoming ≤48h).")
         return 0
 
     def resv(r):
