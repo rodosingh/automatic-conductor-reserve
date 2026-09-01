@@ -16,14 +16,14 @@ from flask import Flask, redirect, render_template, request, url_for
 
 from conductor_reserve import notify
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import run, cancel_small_gpu
+from conductor_reserve.engine import run, cancel_small_gpu, sync_users
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
 
 # Simple in-memory state for the last run + a lock so two clicks don't overlap.
 _lock = threading.Lock()
-_last = {"result": None, "log": [], "running": False, "cancel": None}
+_last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None}
 
 
 def _do_run(commit: bool):
@@ -48,12 +48,24 @@ def _do_cancel(commit: bool):
         _last["running"] = False
 
 
+def _do_sync(commit: bool):
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        _last["sync"] = sync_users(cfg, commit=commit,
+                                   progress=lambda m: _last["log"].append(m))
+    finally:
+        _last["running"] = False
+
+
 @app.route("/")
 def index():
     return render_template(
         "index.html",
         result=_last["result"],
         cancel=_last["cancel"],
+        sync=_last["sync"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -87,6 +99,16 @@ def cancel():
     if not _last["running"]:
         with _lock:
             _do_cancel(commit=do_commit)
+    return redirect(url_for("index"))
+
+
+@app.route("/sync-users", methods=["POST"])
+def sync_users_route():
+    """List our reservations that would get the default users (dry-run), or update if confirmed."""
+    do_commit = request.form.get("confirm") == "on"
+    if not _last["running"]:
+        with _lock:
+            _do_sync(commit=do_commit)
     return redirect(url_for("index"))
 
 

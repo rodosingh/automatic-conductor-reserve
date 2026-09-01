@@ -65,6 +65,8 @@ python app.py               # open http://127.0.0.1:5057
   per-node created/failed table. History + JSONL logs under `runs/`.
 - **Cancel card** → **Find (no delete)** lists our reservations on excluded (sub-`min_gpus`)
   nodes; tick the box and **Cancel** to delete them (mirrors `cancel-small-gpu`).
+- **Sync-users card** → **Find (no update)** lists our ongoing+upcoming reservations; tick
+  the box and **Add default users** to add the config's default users (mirrors `sync-users`).
 - The node-eligibility table shows each node's **GPU count** and why it was included/excluded.
 
 > The web app commits **all** configured pools together (no per-pool button). For per-pool
