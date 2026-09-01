@@ -47,6 +47,8 @@ def main(argv=None) -> int:
     st = sub.add_parser("status", parents=[common],
                         help="report which nodes are free and healthy (from Conductor's scraped data)")
     st.add_argument("--free", action="store_true", help="show only free & healthy nodes")
+    st.add_argument("--reserved", action="store_true",
+                    help="show only currently-reserved nodes, with who holds them and until when")
     st.add_argument("--fast", action="store_true", help="skip the reservation check (health only)")
     st.add_argument("--ssh-user", default=None, help="username for the printed rocm-smi ssh command")
     args = parser.parse_args(argv)
@@ -144,10 +146,27 @@ def _status(args) -> int:
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
     ssh_user = args.ssh_user or cfg.get("ssh_user") or os.getenv("USER") or "<your-ntid>"
-    rows = status_report(cfg, check_reservations=not args.fast,
+    if args.reserved and args.fast:
+        print("--reserved needs the reservation check; ignoring --fast.")
+        args.fast = False
+    rows = status_report(cfg, check_reservations=not args.fast, with_holder=args.reserved,
                          progress=lambda m: print("·", m) if args.verbose else None)
     if args.free:
         rows = [r for r in rows if r["free_and_healthy"]]
+
+    if args.reserved:
+        rows = [r for r in rows if r["reserved_now"]]
+        print(f"{'node':26} {'pool':22} {'gpu':>7} {'until (UTC)':16} {'held by':24} title")
+        print("-" * 104)
+        for r in sorted(rows, key=lambda r: (r["free_at"] or "", r["name"])):
+            h = (r.get("holders") or [{}])[0]
+            users = [u for u in (h.get("users") or []) if u]
+            who = (users[0] + (f" +{len(users) - 1}" if len(users) > 1 else "")) if users else "?"
+            print(f"{r['name'][:26]:26} {r['pool'][:22]:22} "
+                  f"{r['gpu_detected']}/{r['gpu_expected']:<5} {(r['free_at'] or '')[5:16]:16} "
+                  f"{who[:24]:24} {str(h.get('title') or '')[:24]}")
+        print(f"\n{len(rows)} currently-reserved node(s).")
+        return 0
 
     def resv(r):
         if r["reserved_now"] is None:
