@@ -47,6 +47,9 @@ def main(argv=None) -> int:
                         help="cancel OUR reservations on nodes that fail the SSH health probe")
     cu.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
     cu.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    cu.add_argument("--include-access", action="store_true",
+                    help="also release nodes we simply cannot log into from here "
+                         "(default: only genuinely broken/unreachable nodes)")
     su = sub.add_parser("sync-users", parents=[common],
                         help="add config's default users to our existing (ongoing+upcoming) reservations")
     su.add_argument("--commit", action="store_true", help="actually update (default: dry-run)")
@@ -224,16 +227,40 @@ def _status(args) -> int:
         if r["free_and_healthy"]:
             healthy_free.append(r)
 
+    def _by_class(rows_):
+        """Group unhealthy rows by why they failed — the classes mean different things."""
+        from conductor_reserve.probe import CLASS_ACCESS, CLASS_BROKEN, CLASS_UNREACHABLE
+        blurb = {
+            CLASS_BROKEN: "logged in, machine unusable — NOT reserved, safe to release",
+            CLASS_UNREACHABLE: "nothing answered — NOT reserved, safe to release",
+            CLASS_ACCESS: ("could not log in — health UNVERIFIED, not a fault. "
+                           "Still reserved, still kept"),
+        }
+        for cls in (CLASS_BROKEN, CLASS_UNREACHABLE, CLASS_ACCESS):
+            group = [r for r in rows_ if r["health_class"] == cls]
+            if not group:
+                continue
+            print(f"\n  {cls.upper()} ({len(group)}) — {blurb[cls]}")
+            for r in sorted(group, key=lambda r: (r["pool"], r["name"])):
+                held = " [you hold it now]" if r.get("held_now") else ""
+                print(f"    {r['name'][:26]:26} {r['health_reason'][:60]}{held}")
+
     if args.unhealthy:
-        print(f"\n{len(rows)} unhealthy node(s) — these are skipped by `plan` / `run`.")
-        print("Cancel our reservations on them:  python cli.py cancel-unhealthy --commit")
+        nblocked = sum(1 for r in rows if r.get("blocked"))
+        print(f"\n{len(rows)} node(s) failed the health probe — {nblocked} excluded from "
+              f"reservation, {len(rows) - nblocked} unverified but still reserved.")
+        _by_class(rows)
+        print("\nRelease broken/unreachable ones:  python cli.py cancel-unhealthy --commit")
+        print("Include the no-access ones too:   python cli.py cancel-unhealthy --include-access --commit")
         return 0
 
     print(f"\n{len(healthy_free)} free & healthy node(s).")
     if unhealthy and not args.free:
-        print(f"\n{len(unhealthy)} UNHEALTHY node(s) — excluded from reservation:")
-        for r in sorted(unhealthy, key=lambda r: (r["pool"], r["name"])):
-            print(f"  {r['name'][:26]:26} {r['health_reason'][:76]}")
+        blocked = [r for r in unhealthy if r.get("blocked")]
+        print(f"\n{len(unhealthy)} node(s) failed the health probe "
+              f"({len(blocked)} excluded from reservation, "
+              f"{len(unhealthy) - len(blocked)} unverified but still reserved):")
+        _by_class(unhealthy)
     if healthy_free:
         print("\nCheck GPUs live (copy-paste):")
         for r in healthy_free[:20]:
@@ -246,19 +273,28 @@ def _status(args) -> int:
 
 def _cancel_unhealthy(args) -> int:
     """Find and (with --commit) cancel our reservations on nodes failing the health probe."""
-    from conductor_reserve.engine import cancel_unhealthy
+    from conductor_reserve import probe
+    from conductor_reserve.engine import CANCELLABLE_CLASSES, cancel_unhealthy
     cfg = load_config()
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
+    classes = tuple(CANCELLABLE_CLASSES) + ((probe.CLASS_ACCESS,) if args.include_access else ())
     # First pass: probe + find only (no writes) so we can show and confirm.
-    res = cancel_unhealthy(cfg, commit=False,
+    res = cancel_unhealthy(cfg, commit=False, classes=classes,
                            progress=lambda m: print("·", m) if args.verbose else None)
-    nodes, found = res["unhealthy_nodes"], res["found"]
-    print(f"healthy nodes: {res['healthy']} | unhealthy nodes: {len(nodes)}")
+    nodes, found, kept = res["unhealthy_nodes"], res["found"], res["kept"]
+    print(f"healthy nodes: {res['healthy']} | cancellable unhealthy: {len(nodes)} "
+          f"| kept (out of scope): {len(kept)}")
+    print(f"classes in scope: {', '.join(res['classes'])}")
     if nodes:
-        print("\nunhealthy (reason):")
+        print("\nunhealthy & in scope (reason):")
         for n in sorted(nodes, key=lambda n: n["name"]):
-            print(f"  {n['name'][:26]:26} {n['reason'][:76]}")
+            print(f"  {n['name'][:26]:26} [{n['cls']:11}] {n['reason'][:62]}")
+    if kept:
+        print(f"\nkept — unhealthy but out of scope ({len(kept)}), "
+              f"reservations left alone{'' if args.include_access else '; add --include-access to release these'}:")
+        for n in sorted(kept, key=lambda n: n["name"])[:50]:
+            print(f"  {n['name'][:26]:26} [{n['cls']:11}] {n['reason'][:62]}")
     if not found:
         print(f"\nno reservations titled {res['title']!r} on those nodes — nothing to cancel.")
         return 0

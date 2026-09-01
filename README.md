@@ -48,7 +48,7 @@ python cli.py status --reserved      # only nodes YOU have reserved (ongoing + u
 python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
 python cli.py run --commit           # create the reservations (asks for a typed 'yes')
 python cli.py run --commit --node N  # reserve a single node picked from `status`
-python cli.py cancel-unhealthy       # cancel our reservations on nodes failing the health probe
+python cli.py cancel-unhealthy       # release nodes the probe proves are broken/unreachable
 python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
 python cli.py sync-users             # add config's default users to existing reservations
 python cli.py runs                   # list past run summaries
@@ -68,11 +68,25 @@ A node is **healthy** only if, over your own SSH key, all of these hold:
 2. **`rocm-smi`** is installed and reports at least `policy.min_gpus` GPUs,
 3. **`docker`** is installed and **`docker ps`** succeeds.
 
-Only healthy nodes get reserved. The probe is read-only (three shell lookups, nothing is
-changed on the node), runs in parallel, and retries once so a transient blip doesn't
-condemn a good node. `status` prints the failure reason per node; `cancel-unhealthy`
-releases reservations we already hold on nodes that now fail. Configure it under
-`health_probe` in `config.yaml`; disable per-command with `--no-probe`.
+The probe is read-only (three shell lookups, nothing is changed on the node), runs in
+parallel, and retries once so a transient blip doesn't condemn a good node. `status` prints
+the failure reason per node. Configure it under `health_probe`; disable with `--no-probe`.
+
+**A failure is classified, because not every failure is the node's fault:**
+
+| Class | Means | Reserved? | Released by `cancel-unhealthy`? |
+|---|---|---|---|
+| `broken` | We logged in and the box is unusable (0/too few GPUs, no `rocm-smi`, dead Docker) | no | yes |
+| `unreachable` | Nothing answered — timeout, closed, refused | no | yes |
+| `access` | We could not log in (key rejected / password wanted) | **yes** | only with `--include-access` |
+
+`access` is deliberately not disqualifying: it describes *our credentials*, not the machine.
+Blocking on it is a trap — the tool would stop reserving the node and so never regain the
+access needed to check it. On this fleet, nodes have been reachable *without* a reservation
+and denied *while* holding one, so login success is not a proxy for health.
+
+The result is a self-correcting loop: **reserve broadly → probe while the reservation is
+active → release what the probe proves is broken.** Tune with `health_probe.block_classes`.
 
 ### Web control app
 ```bash
@@ -82,7 +96,9 @@ python app.py                 # http://127.0.0.1:5057
   per-node created/failed table + run history.
 - **Node health card** — runs the SSH probe and lists every **unhealthy node with its reason**,
   plus a full table of all nodes. Mirrors `cli.py status`.
-- **Cancel unhealthy card** — find/cancel our reservations on nodes failing the probe.
+- **Cancel unhealthy card** — find/cancel our reservations on nodes the probe blames on the
+  machine; nodes we merely can't log into are listed separately and kept (tick *include
+  no-access* to release those too).
 - **Cancel card** — find/cancel our reservations on sub-`min_gpus` nodes.
 - **Sync-users card** — add the config's default users to existing reservations.
 - **My reservations card** — nodes you have reserved (ongoing + upcoming), with each one's
@@ -114,6 +130,7 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `health_probe.enabled` | run the SSH health probe at all (`false` = Conductor's scraped data only) |
 | `health_probe.user` / `key` | login user (defaults to `ssh_user`) and private key to authenticate with |
 | `health_probe.timeout_s` / `workers` | per-node time budget, and how many nodes to probe in parallel |
+| `health_probe.block_classes` | which probe failures disqualify a node (default `[broken, unreachable]` — `access` is not blocking) |
 | `policy.default_duration_hours` / `default_horizon_days` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
 
 ## How eligibility & scheduling work
@@ -121,7 +138,8 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 - **Eligible pool:** `reservation_strategy == "calendar"`, not archived, `block_api_access`
   false, group restrictions met.
 - **Eligible node:** in an eligible pool, not archived, with at least `policy.min_gpus`
-  GPUs, **and passing the live SSH health probe** (key-only login + `rocm-smi` + `docker ps`).
+  GPUs, and **not shown by the live SSH probe to be `broken` or `unreachable`** (a node we
+  merely can't log into is still reserved — see the health table above).
   (Cosmetic `status` is ignored — the SDK states it must not affect reservations.
   `reservation_only` nodes are included.)
 - **Greedy plan (per node):** tile the node's free time — read from the **actual reservation

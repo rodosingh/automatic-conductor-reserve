@@ -14,10 +14,10 @@ import threading
 
 from flask import Flask, redirect, render_template, request, url_for
 
-from conductor_reserve import notify
+from conductor_reserve import notify, probe
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import (cancel_small_gpu, cancel_unhealthy, run,
-                                      status_report, sync_users)
+from conductor_reserve.engine import (CANCELLABLE_CLASSES, cancel_small_gpu,
+                                      cancel_unhealthy, run, status_report, sync_users)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
@@ -84,12 +84,13 @@ def _do_health():
         _last["running"] = False
 
 
-def _do_cancel_unhealthy(commit: bool):
+def _do_cancel_unhealthy(commit: bool, include_access: bool):
     cfg = load_config()
     _last["log"] = []
     _last["running"] = True
+    classes = tuple(CANCELLABLE_CLASSES) + ((probe.CLASS_ACCESS,) if include_access else ())
     try:
-        _last["unhealthy"] = cancel_unhealthy(cfg, commit=commit,
+        _last["unhealthy"] = cancel_unhealthy(cfg, commit=commit, classes=classes,
                                               progress=lambda m: _last["log"].append(m))
     finally:
         _last["running"] = False
@@ -164,9 +165,10 @@ def status_route():
 def cancel_unhealthy_route():
     """List our reservations on probe-failing nodes (dry-run), or cancel them if confirmed."""
     do_commit = request.form.get("confirm") == "on"
+    include_access = request.form.get("include_access") == "on"
     if not _last["running"]:
         with _lock:
-            _do_cancel_unhealthy(commit=do_commit)
+            _do_cancel_unhealthy(commit=do_commit, include_access=include_access)
     return redirect(url_for("index"))
 
 
