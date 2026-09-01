@@ -65,6 +65,7 @@ python app.py                 # http://127.0.0.1:5057
   per-node created/failed table + run history.
 - **Cancel card** — find/cancel our reservations on sub-`min_gpus` nodes.
 - **Sync-users card** — add the config's default users to existing reservations.
+- **My reservations card** — nodes you have reserved (ongoing + upcoming), mirrors `status --reserved`.
 - Node-eligibility table shows each node's GPU count + include/exclude reason.
 
 Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.

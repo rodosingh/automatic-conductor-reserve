@@ -86,6 +86,8 @@ python app.py               # open http://127.0.0.1:5057
   nodes; tick the box and **Cancel** to delete them (mirrors `cancel-small-gpu`).
 - **Sync-users card** → **Find (no update)** lists our ongoing+upcoming reservations; tick
   the box and **Add default users** to add the config's default users (mirrors `sync-users`).
+- **My reservations card** → **Show my reservations** lists the nodes YOU have reserved
+  (ongoing + upcoming) with your window, block count, and active/upcoming (mirrors `status --reserved`).
 - The node-eligibility table shows each node's **GPU count** and why it was included/excluded.
 
 > The web app commits **all** configured pools together (no per-pool button). For per-pool
