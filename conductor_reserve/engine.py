@@ -184,6 +184,54 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
             "found": found, "cancelled": cancelled, "committed": bool(commit)}
 
 
+def status_report(config: dict, *, client: Optional[ConductorClient] = None,
+                  check_reservations: bool = True, progress=None) -> list[dict]:
+    """Read-only 'free & healthy' report for every eligible node across configured pools.
+
+    Health comes from Conductor's scraped data; free/busy from the live reservation list.
+    """
+    from datetime import timedelta
+
+    def emit(msg: str):
+        LOG.info(msg)
+        if progress:
+            progress(msg)
+
+    client = client or ConductorClient()
+    policy = config.get("policy", {})
+    min_gpus = int(policy.get("min_gpus", 2))
+    now = datetime.now(timezone.utc)
+    rows: list[dict] = []
+    for entry in config["pools"]:
+        pool = client.get_pool(entry["id"])
+        only = entry.get("only_nodes")
+        wanted = {_norm(x) for x in only} if only else None
+        health = client.node_health(pool, min_gpus=min_gpus)
+        emit(f"pool {pool.name}: {len(health)} node(s)")
+        for h in health:
+            if wanted is not None and _norm(h["name"]) not in wanted:
+                continue
+            h["gpu_ok"] = (h["gpu_detected"] is not None and h["gpu_expected"] is not None
+                           and h["gpu_detected"] == h["gpu_expected"] and h["gpu_detected"] >= min_gpus)
+            h["healthy"] = h["reachable"] and h["gpu_ok"] and not h["disabled"] and not h["archived"]
+            h["reserved_now"] = None
+            h["free_for_h"] = None
+            h["free_at"] = None
+            if check_reservations:
+                busy = client.busy_intervals(h["id"], now, now + timedelta(hours=48))
+                active = [b for b in busy if b[0] <= now < b[1]]
+                h["reserved_now"] = bool(active)
+                if active:
+                    h["free_at"] = max(b[1] for b in active).isoformat()
+                else:
+                    upcoming = [b[0] for b in busy if b[0] > now]
+                    h["free_for_h"] = ((min(upcoming) - now).total_seconds() / 3600.0
+                                       if upcoming else float("inf"))
+            h["free_and_healthy"] = bool(h["healthy"] and h["reserved_now"] is False)
+            rows.append(h)
+    return rows
+
+
 def sync_users(config: dict, *, commit: bool = False,
                client: Optional[ConductorClient] = None, progress=None) -> dict:
     """Ensure every existing (ongoing + upcoming) reservation with our title carries the

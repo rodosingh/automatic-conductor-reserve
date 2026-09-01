@@ -196,6 +196,35 @@ class ConductorClient:
             ))
         return nodes
 
+    def node_health(self, pool: PoolInfo, min_gpus: int = 2) -> list[dict]:
+        """Per-node health from Conductor's own scraped data (no SSH). Read-only."""
+        out: list[dict] = []
+        for s in self._systems.find_system_advanced(pool=[pool.name]).all():
+            d = s.model_dump()
+            ssh = d.get("system_ssh_data") or {}
+            st = d.get("system_states") or {}
+            gpu_det = ssh.get("gpu_count")
+            gpu_exp = _dig(d, "system_datas", "platform_config", "num_dgpus")
+            out.append({
+                "id": str(d.get("id")),
+                "name": _dig(d, "system_datas", "name") or str(d.get("id")),
+                "hostname": _dig(d, "system_datas", "hostname_ip"),
+                "pool": pool.name,
+                "gpu_detected": gpu_det, "gpu_expected": gpu_exp,
+                "reachable": ssh.get("reachability_status") == "SUCCESS",
+                "reachability": ssh.get("reachability_status"),
+                "disabled": bool(st.get("disabled")),
+                "disabled_reason": st.get("disabled_reason"),
+                "ssh_enabled": bool(st.get("ssh_enabled")),
+                "telemetry": ssh.get("fleet_telemetry_state"),
+                "driver": ssh.get("current_gpu_driver_loaded"),
+                "rocm_ver": ssh.get("rocm_ver"),
+                "util_24h": st.get("utilization_24hrs"),
+                "archived": bool(d.get("archived")),
+                "min_gpus": min_gpus,
+            })
+        return out
+
     # ---- our reservations / cancellation ---------------------------------
     def find_our_reservations(self, node_ids: list[str], our_emails: set[str],
                               titles: set[str], *, future_only: bool = False) -> list[dict]:
