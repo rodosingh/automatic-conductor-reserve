@@ -153,6 +153,39 @@
     {% endif %}
   </div>
 
+  <div class="card">
+    <div class="kv"><b>My reservations</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Nodes YOU have reserved (ongoing + upcoming) across the configured pools — your combined
+      window, block count, and whether it's active now. Read-only; takes ≈1–2 min to scan.
+    </div>
+    <form action="{{ url_for('reserved_route') }}" method="post">
+      <button class="btn btn-plan" {% if running %}disabled{% endif %}>📋 Show my reservations</button>
+    </form>
+    {% if reserved is not none %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ reserved|length }} node(s) reserved by you</b></div>
+        {% if reserved %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Pool</th><th>GPU</th><th>Your hold (UTC)</th><th>#</th><th>State</th><th>Title</th></tr></thead>
+          <tbody>
+          {% for r in reserved|sort(attribute='name') %}
+            {% set mine = r.mine %}
+            {% set active = mine|selectattr('active')|list|length > 0 %}
+            <tr><td>{{ r.name }}</td><td class="mut">{{ r.pool }}</td>
+                <td class="mut">{{ r.gpu_detected }}/{{ r.gpu_expected }}</td>
+                <td>{{ mine[0].date_start[5:16] }} → {{ (mine|map(attribute='date_end')|max)[5:16] }}</td>
+                <td class="mut">{{ mine|length }}</td>
+                <td>{% if active %}<span class="pill created">active</span>{% else %}<span class="pill planned">upcoming</span>{% endif %}</td>
+                <td class="mut">{{ mine[0].title }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">You have no reservations on the configured pools' nodes.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
   {% if result %}
     {% set s = result.summary() %}
     <div class="card">

@@ -16,14 +16,15 @@ from flask import Flask, redirect, render_template, request, url_for
 
 from conductor_reserve import notify
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import run, cancel_small_gpu, sync_users
+from conductor_reserve.engine import run, cancel_small_gpu, sync_users, status_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
 
 # Simple in-memory state for the last run + a lock so two clicks don't overlap.
 _lock = threading.Lock()
-_last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None}
+_last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
+         "reserved": None}
 
 
 def _do_run(commit: bool):
@@ -59,6 +60,19 @@ def _do_sync(commit: bool):
         _last["running"] = False
 
 
+def _do_reserved():
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        window = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
+        rows = status_report(cfg, window_hours=window,
+                             progress=lambda m: _last["log"].append(m))
+        _last["reserved"] = [r for r in rows if r["reserved_by_me"]]
+    finally:
+        _last["running"] = False
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -66,6 +80,7 @@ def index():
         result=_last["result"],
         cancel=_last["cancel"],
         sync=_last["sync"],
+        reserved=_last["reserved"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -109,6 +124,15 @@ def sync_users_route():
     if not _last["running"]:
         with _lock:
             _do_sync(commit=do_commit)
+    return redirect(url_for("index"))
+
+
+@app.route("/reserved", methods=["POST"])
+def reserved_route():
+    """Show the nodes reserved by me (ongoing + upcoming). Read-only."""
+    if not _last["running"]:
+        with _lock:
+            _do_reserved()
     return redirect(url_for("index"))
 
 
