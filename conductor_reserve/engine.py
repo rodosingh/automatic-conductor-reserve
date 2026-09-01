@@ -23,10 +23,12 @@ def _norm(hostname: str) -> str:
 
 
 def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient] = None,
-        progress=None) -> RunResult:
+        progress=None, node_names: Optional[list] = None) -> RunResult:
     """Execute one planning (and optionally committing) run.
 
     progress: optional callable(str) for live status lines (used by the web UI).
+    node_names: if given, restrict to eligible nodes whose name matches one of these
+        (domain-insensitive) — e.g. reserve a single node picked from `status`.
     """
     def emit(msg: str):
         LOG.info(msg)
@@ -93,6 +95,17 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
             if n.eligible:
                 eligible_nodes.append((n, pool))
         emit(f"  {sum(1 for n in nodes if n.eligible)}/{len(nodes)} systems eligible")
+
+    if node_names:
+        want = {_norm(x) for x in node_names}
+        before = len(eligible_nodes)
+        eligible_nodes = [(n, p) for (n, p) in eligible_nodes if _norm(n.name) in want]
+        found = {_norm(n.name) for n, _ in eligible_nodes}
+        missing = [x for x in node_names if _norm(x) not in found]
+        if missing:
+            result.errors.append("requested nodes not eligible/found: " + ", ".join(missing))
+            emit("WARNING: requested nodes not eligible/found: " + ", ".join(missing))
+        emit(f"restricted to {len(eligible_nodes)}/{before} eligible node(s) by --node")
 
     if max_nodes is not None:
         eligible_nodes = eligible_nodes[: int(max_nodes)]
