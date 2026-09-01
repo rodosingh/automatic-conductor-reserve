@@ -203,7 +203,7 @@ writes happen only on an explicit commit (CLI `--commit` with a typed "yes", or 
 "Reserve for real" checkbox).
 
 ```
-hyperloom-reserve/
+automatic-conductor-reserve/
   .env                     # AMD_EMAIL, ATS_SECRET (mode 600, gitignored) — never logged/committed
   config.yaml              # reservation defaults + pools + greedy policy knobs
   conductor_reserve/
