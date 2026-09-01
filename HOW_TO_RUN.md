@@ -25,6 +25,10 @@ python cli.py runs
 # 4) CANCEL our current+future reservations on excluded (sub-min_gpus) nodes
 python cli.py cancel-small-gpu            # dry-run: lists what would be cancelled
 python cli.py cancel-small-gpu --commit   # actually cancel (asks you to type 'yes')
+
+# 5) SYNC USERS — add config's default users to our existing (ongoing+upcoming) reservations
+python cli.py sync-users                  # dry-run: lists reservations that would be updated
+python cli.py sync-users --commit         # add the default users (mode 'add' — never removes)
 ```
 
 ### Flags for `run` and `cancel-small-gpu`

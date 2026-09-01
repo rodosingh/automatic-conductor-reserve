@@ -230,6 +230,40 @@ class ConductorClient:
         ids = [UUID(str(x)) for x in reservation_ids]
         return [str(x) for x in self._rc.delete(ids)]
 
+    def my_reservations(self, title: Optional[str] = None, *, future: bool = True) -> list[dict]:
+        """My ongoing (and, with future=True, upcoming) reservations, optionally filtered by
+        title. Scoped to me (I'm a member), so I have edit rights on them. Read-only."""
+        gen = self._MyResources().reservations(return_future_reservations=future)
+        out: list[dict] = []
+        pages = 0
+        while pages < 60:
+            page = gen.next()
+            if page is None:
+                break
+            for r in (getattr(page, "data", None) or []):
+                d = r.model_dump()
+                if title is not None and d.get("title") != title:
+                    continue
+                out.append({
+                    "id": str(d.get("id")), "title": d.get("title"),
+                    "date_start": str(d.get("date_start")), "date_end": str(d.get("date_end")),
+                    "users": [(u.get("email") if isinstance(u, dict) else None)
+                              for u in (d.get("users") or [])],
+                })
+            pages += 1
+            if getattr(page, "last_page", True):
+                break
+        return out
+
+    def add_users_to_reservation(self, reservation_id: str, user_ids: list[str]) -> None:
+        """Add users to an existing reservation (mode='add' — never removes anyone)."""
+        from uuid import UUID
+        from ats_models.pydantic.reservations.actions.update import UpdateReservation
+        upd = UpdateReservation(id=UUID(str(reservation_id)),
+                                user_ids=[UUID(str(u)) for u in user_ids],
+                                user_ids_mode="add")
+        self._rc.update([upd])
+
     # ---- availability -----------------------------------------------------
     def busy_intervals(self, target_id: str, start: datetime, end: datetime
                        ) -> list[tuple[datetime, datetime]]:

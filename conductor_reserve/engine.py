@@ -184,6 +184,45 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
             "found": found, "cancelled": cancelled, "committed": bool(commit)}
 
 
+def sync_users(config: dict, *, commit: bool = False,
+               client: Optional[ConductorClient] = None, progress=None) -> dict:
+    """Ensure every existing (ongoing + upcoming) reservation with our title carries the
+    config's default users. Uses an additive update (mode='add'), so it never removes anyone
+    and is idempotent. Returns the reservations found and, when committed, per-item outcome.
+    """
+    def emit(msg: str):
+        LOG.info(msg)
+        if progress:
+            progress(msg)
+
+    client = client or ConductorClient()
+    res_cfg = config["reservation"]
+    title = res_cfg["title"]
+    user_ids, unresolved = client.resolve_users(res_cfg.get("users", []))
+    if unresolved:
+        emit("WARNING: unresolved users skipped: " + ", ".join(unresolved))
+    reservations = client.my_reservations(title=title, future=True)
+    emit(f"{len(reservations)} ongoing/upcoming reservation(s) titled {title!r}; "
+         f"ensuring {len(user_ids)} default user(s) on each")
+
+    results = []
+    for r in reservations:
+        row = {**r, "status": "planned", "message": ""}
+        if commit:
+            try:
+                client.add_users_to_reservation(r["id"], user_ids)
+                row["status"] = "updated"
+            except Exception as e:  # noqa: BLE001
+                row["status"] = "failed"
+                row["message"] = _short(str(e))
+        results.append(row)
+    if commit:
+        ok = sum(1 for x in results if x["status"] == "updated")
+        emit(f"updated {ok}/{len(results)} reservation(s)")
+    return {"title": title, "user_ids": user_ids, "unresolved": unresolved,
+            "reservations": results, "committed": bool(commit)}
+
+
 def _commit(client: ConductorClient, result: RunResult, emit) -> None:
     """Create each planned reservation individually so per-item status is unambiguous.
 

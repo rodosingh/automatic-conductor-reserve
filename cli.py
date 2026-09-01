@@ -38,6 +38,10 @@ def main(argv=None) -> int:
                        help="cancel OUR current+future reservations on nodes below min_gpus")
     c.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
     c.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    su = sub.add_parser("sync-users", parents=[common],
+                        help="add config's default users to our existing (ongoing+upcoming) reservations")
+    su.add_argument("--commit", action="store_true", help="actually update (default: dry-run)")
+    su.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -62,6 +66,9 @@ def main(argv=None) -> int:
 
     if args.cmd == "cancel-small-gpu":
         return _cancel_small_gpu(args)
+
+    if args.cmd == "sync-users":
+        return _sync_users(args)
 
     cfg = load_config()
     if getattr(args, "pool", None):
@@ -115,6 +122,38 @@ def _cancel_small_gpu(args) -> int:
         return 1
     out = cancel_small_gpu(cfg, commit=True)
     print(f"cancelled {len(out['cancelled'])} reservation(s): {', '.join(out['cancelled'])}")
+    return 0
+
+
+def _sync_users(args) -> int:
+    """Add config's default users to our existing (ongoing+upcoming) reservations."""
+    from conductor_reserve.engine import sync_users
+    cfg = load_config()
+    res = sync_users(cfg, commit=False)   # find only
+    rows = res["reservations"]
+    print(f"default users to ensure: {len(res['user_ids'])}"
+          + (f" | unresolved: {', '.join(res['unresolved'])}" if res["unresolved"] else ""))
+    print(f"ongoing/upcoming reservations titled {res['title']!r}: {len(rows)}")
+    for r in rows[:60]:
+        print(f"  {r['date_start'][:16]} -> {r['date_end'][:16]} | {len(r['users'])} users | {r['id']}")
+    if len(rows) > 60:
+        print(f"  ... +{len(rows) - 60} more")
+    if not rows:
+        return 0
+    if not args.commit:
+        print("\n(dry-run) re-run with --commit to add the default users to these.")
+        return 0
+    if not args.yes and input(
+            f"\nAdd default users to these {len(rows)} reservation(s)? Type 'yes': "
+            ).strip().lower() != "yes":
+        print("aborted.")
+        return 1
+    out = sync_users(cfg, commit=True, progress=lambda m: print("·", m) if args.verbose else None)
+    ok = sum(1 for x in out["reservations"] if x["status"] == "updated")
+    fail = [x for x in out["reservations"] if x["status"] == "failed"]
+    print(f"updated {ok}/{len(out['reservations'])} reservation(s)")
+    for x in fail[:10]:
+        print(f"  FAILED {x['id']}: {x['message']}")
     return 0
 
 
