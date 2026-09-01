@@ -149,7 +149,11 @@ def _status(args) -> int:
     if args.reserved and args.fast:
         print("--reserved needs the reservation check; ignoring --fast.")
         args.fast = False
-    rows = status_report(cfg, check_reservations=not args.fast,
+    # For "reserved by me" show the full future holdings, not just the next 48h.
+    window_hours = 48
+    if args.reserved:
+        window_hours = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
+    rows = status_report(cfg, check_reservations=not args.fast, window_hours=window_hours,
                          progress=lambda m: print("·", m) if args.verbose else None)
     if args.free:
         rows = [r for r in rows if r["free_and_healthy"]]
@@ -166,7 +170,7 @@ def _status(args) -> int:
             state = "ACTIVE" if any(m["active"] for m in mine) else "upcoming"
             print(f"{r['name'][:26]:26} {r['pool'][:22]:22} {r['gpu_detected']}/{r['gpu_expected']:<3} "
                   f"{start+' -> '+end:29} {len(mine):>2} {state:8} {str(mine[0]['title'] or '')[:22]}")
-        print(f"\n{len(rows)} node(s) reserved by you (ongoing + upcoming ≤48h).")
+        print(f"\n{len(rows)} node(s) reserved by you (ongoing + upcoming).")
         return 0
 
     def resv(r):

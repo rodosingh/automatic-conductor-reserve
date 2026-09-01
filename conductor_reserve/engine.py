@@ -210,10 +210,13 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
 
 
 def status_report(config: dict, *, client: Optional[ConductorClient] = None,
-                  check_reservations: bool = True, progress=None) -> list[dict]:
+                  check_reservations: bool = True, window_hours: int = 48,
+                  progress=None) -> list[dict]:
     """Read-only 'free & healthy' report for every eligible node across configured pools.
 
     Health comes from Conductor's scraped data; free/busy from the live reservation list.
+    window_hours: how far ahead to look for reservations (48h for free/busy; widen it to
+    capture your full holdings for a 'reserved by me' view).
     """
     from datetime import timedelta
 
@@ -246,7 +249,7 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
             h["reserved_by_me"] = False
             h["mine"] = []
             if check_reservations:
-                resv = client.reservations_window(h["id"], now, now + timedelta(hours=48))
+                resv = client.reservations_window(h["id"], now, now + timedelta(hours=window_hours))
                 intervals = _merge_iv([(r["date_start"], r["date_end"]) for r in resv])
                 active = [iv for iv in intervals if iv[0] <= now < iv[1]]
                 h["reserved_now"] = bool(active)
