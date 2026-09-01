@@ -1,0 +1,52 @@
+# Hyperloom auto-reservation config.
+# Edit the reservation defaults and policy here. Credentials live in .env (never here).
+
+reservation:
+  title: "Hyperloom-E2E-expt"
+  project: "Hyperloom"
+  description: "This is a test reservation for the Hyperloom project."
+  # Milestone / Deadline (the reservation's deadline). Must be >= every reservation end.
+  # Format: YYYY-MM-DD. Default ~1 month out.
+  milestone: "2026-09-30"
+  # "Team for Allocation" dropdown. Resolved to a team_id from your team memberships.
+  team_name: "AIG-Training"
+  # Disable batch jobs on system for duration of reservation (form checkbox).
+  batch_opt_out: true
+  # Extra users to add besides yourself (you are always auto-included by the server).
+  # Entries may be an email, an "Last, First" full name, or a raw user UUID.
+  users:
+    - "saptarshi.majumder@amd.com"
+    - "subrahmanyapavankumar.dubagunta@amd.com"
+
+pools:
+  - id: "a58e25ad-9aaf-4f6c-87ad-138d08f56510"   # MI300X-AIG-SW-Shared-Pool  (all eligible nodes)
+  - id: "d708f0af-1b34-4f07-8b73-ebbc1f584fd6"   # MI350X-AIG-SW-Shared-Pool  (all eligible nodes)
+  - id: "46c35d80-1e4a-4970-aaa1-d7269f3e67f7"   # MI350X-AIG-SW-Models
+    # Only reserve these specific nodes from this pool; ignore the rest.
+    # Entries may be the short name or the full hostname (domain is stripped for matching).
+    only_nodes:
+      - "cv350-tnndh2-b05-1"
+      - "cv350-tnndh2-b05-2"
+      - "smci355-ccs-aus-m11-25"
+      - "smci355-ccs-aus-m15-13"
+
+policy:
+  # Greedy fill: for each eligible node, chain back-to-back reservations of up to the
+  # pool's max duration, from the earliest free time until the pool's future horizon.
+  # Both current pools cap duration and horizon at 48h, so this is ~one 48h reservation
+  # per free node. Limits below are safety rails; null = no cap.
+  max_nodes: null                 # cap number of nodes touched per run (null = all eligible)
+  max_reservations_per_node: null # cap chained reservations per node (null = fill horizon)
+  min_reservation_minutes: 60     # skip free gaps shorter than this
+  round_minutes: 10               # server rounds to 10-min marks; match it
+  # Never start a reservation earlier than now + this many minutes (avoids "in the past").
+  start_lead_minutes: 20
+  # Exclude nodes with fewer than this many GPUs. There are no 2-4 GPU nodes in these
+  # pools, so min_gpus:2 simply drops the eleven 1-GPU dev boxes and keeps the 8-GPU nodes.
+  min_gpus: 2
+  # Fallback limits for pools that set NO reservation_duration_limit / furthest_future
+  # (e.g. MI350X-AIG-SW-Models). furthest_future caps how far ahead a reservation may START;
+  # these match the observed behaviour (24h blocks, ~14 days out). Used only when the pool
+  # itself specifies no limit; pools A/B use their own 48h/48h.
+  default_duration_hours: 24
+  default_horizon_days: 14

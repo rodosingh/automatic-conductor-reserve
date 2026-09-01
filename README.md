@@ -1,0 +1,96 @@
+# Hyperloom Auto-Reserve
+
+Automatically reserves eligible **standalone Conductor nodes** across the configured pools,
+greedily filling each node's free time up to the pool's future horizon. Pure REST via the
+official **Conductor Python SDK** — no browser, no cookies, nothing that expires.
+
+> **Dry-run is the default.** Nothing is ever created unless you explicitly commit
+> (CLI `--commit` + typed `yes`, or the web **Reserve for real** checkbox).
+
+- **[HOW_TO_RUN.md](HOW_TO_RUN.md)** — step-by-step run guide + how to hand it to colleagues.
+- **[DISCOVERY_LOG.md](DISCOVERY_LOG.md)** — the full build story (every dead-end, fix, learning).
+
+## Setup
+
+Already done on this machine, but for reference:
+
+```bash
+# SDK (into base conda):
+pip install conductor_sdk flask pyyaml \
+  --index-url https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple \
+  --extra-index-url https://pypi.org/simple \
+  --trusted-host mkmartifactory.amd.com
+```
+
+Credentials live in **`.env`** (mode 600, gitignored):
+
+```
+AMD_EMAIL=adityakumar.singh@amd.com
+ATS_SECRET=<your Conductor API key>     # Conductor UI > profile > API key
+VERIFY_CERTS=false
+```
+
+## Use
+
+### Command line
+```bash
+python cli.py whoami          # verify auth + list your teams
+python cli.py plan            # DRY-RUN: show exactly what would be reserved (no writes)
+python cli.py run --commit    # create the reservations (asks for a typed 'yes')
+python cli.py runs            # list past run summaries
+python cli.py plan -v         # verbose: live progress lines
+```
+
+### Web control app
+```bash
+python app.py                 # http://127.0.0.1:5057
+```
+- **Dry-run plan** — shows the full plan table (node, pool, start/end, users), no writes.
+- **Reserve for real** — tick the confirm box, then create. Live per-node result table
+  (created / failed with the server's reason) + run history. A run takes ≈1–2 min for all
+  nodes (one conflict check per node).
+
+Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
+
+## Configuration (`config.yaml`)
+
+| Field | Meaning |
+|---|---|
+| `reservation.title` | "Reservation Title" (free text, ≥3 chars) |
+| `reservation.project` | "Project" (free text, ≥3 chars — not validated against a list) |
+| `reservation.description` | "Reservation Description" (optional) |
+| `reservation.milestone` | "Milestone / Deadline" `YYYY-MM-DD` (must be ≥ every reservation end) |
+| `reservation.team_name` | "Team for Allocation" (must be one of your teams) |
+| `reservation.batch_opt_out` | the "Disable batch jobs…" checkbox |
+| `reservation.users` | extra users — **email, NTID, "Last, First" name, or UUID** (you're auto-included) |
+| `pools[].id` | pool UUIDs to sweep |
+| `pools[].only_nodes` | *(optional)* restrict this pool to just these nodes (short name or full hostname; domain ignored). Omit = all eligible nodes in the pool. |
+| `policy.max_nodes` | cap nodes touched per run (`null` = all) |
+| `policy.max_reservations_per_node` | cap chained reservations per node (`null` = fill horizon) |
+| `policy.min_reservation_minutes` | skip free gaps shorter than this |
+| `policy.start_lead_minutes` | never start earlier than now + this |
+| `policy.default_duration_hours` / `default_horizon_hours` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
+
+## How eligibility & scheduling work
+
+- **Eligible pool:** `reservation_strategy == "calendar"`, not archived, `block_api_access`
+  false, group restrictions met.
+- **Eligible node:** in an eligible pool and not archived. (Cosmetic `status` is ignored —
+  the SDK states it must not affect reservations. `reservation_only` nodes are included.)
+- **Greedy plan (per node):** from `now + start_lead` to `now + pool.furthest_future`,
+  tile the free time (discovered via the server's `check_conflicts`) with back-to-back
+  reservations of up to `pool.reservation_duration_limit`, rounded to 10-minute marks,
+  splitting around existing bookings. Both current pools cap at 48h, so in practice this is
+  ~one 48h reservation per free node.
+- **Commit:** creates via the SDK; the server's `notes` explains any per-node failure
+  (already reserved / no access). We never double-book.
+
+## Do we need an LLM "agent"?
+
+**No.** The task is fully deterministic — enumerate, check eligibility, compute slots from
+hard rules, create. A plain Python service is more **reliable** (no hallucinated bookings),
+**cheaper**, **auditable**, and **safe** than an LLM agent, and it's what runs here. An LLM
+agent would only earn its place if you later want *natural-language* control
+("reserve all idle MI300 nodes for Priya next week") — in which case wrap these same
+functions as tools behind an LLM, or use Conductor's own **MCP server**. The reservation
+logic stays exactly this code either way.

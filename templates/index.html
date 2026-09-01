@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyperloom Auto-Reserve</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0f1216; --card:#171b21; --fg:#e6e6e6; --mut:#9aa4b2;
+          --ok:#3fb950; --bad:#f85149; --warn:#d29922; --acc:#388bfd; --line:#2a2f37; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:16px; }
+  h1 { font-size:18px; margin:0; }
+  .mut { color:var(--mut); }
+  main { padding:24px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 20px; margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .kv { font-size:13px; } .kv b { color:var(--mut); font-weight:500; display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em;}
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mut); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.04em;}
+  .pill { padding:1px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+  .planned { background:#1f2937; color:var(--acc); }
+  .created { background:#132a17; color:var(--ok); }
+  .failed  { background:#2d1315; color:var(--bad); }
+  .btn { border:0; border-radius:8px; padding:10px 18px; font-weight:600; cursor:pointer; font-size:14px; }
+  .btn-plan { background:#1f6feb; color:#fff; }
+  .btn-commit { background:#8957e5; color:#fff; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  form { display:inline; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .stat { font-size:22px; font-weight:700; } .stat.ok{color:var(--ok);} .stat.bad{color:var(--bad);}
+  pre { background:#0b0e12; border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; max-height:220px; font-size:12px; color:var(--mut);}
+  .warnbar { background:#2a230d; border:1px solid #5c4813; color:#e3b341; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:13px;}
+  code { background:#0b0e12; padding:1px 5px; border-radius:4px; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔒 Hyperloom Auto-Reserve</h1>
+  <span class="mut">Conductor standalone-node reservation · manual trigger</span>
+</header>
+<main>
+
+  {% if config.error %}
+    <div class="warnbar">Config error: {{ config.error }}</div>
+  {% endif %}
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <div class="kv"><b>Reservation defaults</b></div>
+        <div class="grid" style="margin-top:8px">
+          <div class="kv"><b>Title</b>{{ config.title }}</div>
+          <div class="kv"><b>Project</b>{{ config.project }}</div>
+          <div class="kv"><b>Milestone</b>{{ config.milestone }}</div>
+          <div class="kv"><b>Team</b>{{ config.team_name }}</div>
+          <div class="kv"><b>Disable batch jobs</b>{{ 'yes' if config.batch_opt_out else 'no' }}</div>
+          <div class="kv"><b>Extra users</b>{{ config.users|join(', ') }}</div>
+        </div>
+      </div>
+    </div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+    <div class="row">
+      <form action="{{ url_for('plan') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>▶ Dry-run plan (no writes)</button>
+      </form>
+      <form action="{{ url_for('commit') }}" method="post" onsubmit="return confirm('Create REAL reservations on shared lab nodes?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — reserve for real</label>
+        <button class="btn btn-commit" {% if running %}disabled{% endif %}>✓ Reserve for real</button>
+      </form>
+      {% if running %}<span class="mut">running… (≈1–2 min for all nodes)</span>{% endif %}
+    </div>
+    <div class="mut" style="font-size:12px;margin-top:10px">
+      Greedy policy: fill each eligible node with back-to-back reservations up to the pool's
+      horizon. Pools A/B cap a reservation's end at 48h ahead; pool C (no limit) chains 24h
+      blocks out to ~14 days. Nodes with fewer than {{ config.policy.min_gpus or 2 }} GPUs are excluded.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="kv"><b>Cancel our reservations on excluded (sub-{{ config.policy.min_gpus or 2 }}-GPU) nodes</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Finds current + future reservations under our title/users on nodes below the GPU minimum,
+      and (with the box ticked) cancels them. Other people's reservations are never touched.
+    </div>
+    <div class="row">
+      <form action="{{ url_for('cancel') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find (no delete)</button>
+      </form>
+      <form action="{{ url_for('cancel') }}" method="post" onsubmit="return confirm('Permanently cancel our reservations on the sub-GPU nodes?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — cancel them</label>
+        <button class="btn btn-commit" {% if running %}disabled{% endif %}>🗑 Cancel</button>
+      </form>
+    </div>
+    {% if cancel %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ cancel.found|length }} of our reservation(s) on {{ cancel.nodes_below }} sub-{{ cancel.min_gpus }}-GPU node(s){% if cancel.committed %} — cancelled {{ cancel.cancelled|length }}{% endif %}</b></div>
+        {% if cancel.found %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Start</th><th>End</th><th>Title</th><th>Status</th></tr></thead>
+          <tbody>
+          {% for r in cancel.found %}
+            <tr><td>{{ r.node_name }}</td><td>{{ r.date_start[:16] }}</td><td>{{ r.date_end[:16] }}</td>
+                <td class="mut">{{ r.title }}</td>
+                <td>{% if r.id in cancel.cancelled %}<span class="pill created">cancelled</span>{% else %}<span class="pill planned">found</span>{% endif %}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">Nothing of ours to cancel on those nodes.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  {% if result %}
+    {% set s = result.summary() %}
+    <div class="card">
+      <div class="kv"><b>Last run — {{ 'COMMIT (created reservations)' if result.committed else 'DRY-RUN (no writes)' }} · {{ s.started_at }}</b></div>
+      <div class="grid" style="margin-top:12px">
+        <div><div class="stat">{{ s.pools_eligible }}/{{ s.pools_total }}</div><div class="mut">pools eligible</div></div>
+        <div><div class="stat">{{ s.nodes_eligible }}/{{ s.nodes_total }}</div><div class="mut">nodes eligible</div></div>
+        <div><div class="stat">{{ s.planned }}</div><div class="mut">reservations planned</div></div>
+        {% if result.committed %}
+        <div><div class="stat ok">{{ s.created }}</div><div class="mut">created</div></div>
+        <div><div class="stat {{ 'bad' if s.failed else '' }}">{{ s.failed }}</div><div class="mut">failed</div></div>
+        {% endif %}
+      </div>
+      {% if s.errors %}<div class="warnbar" style="margin-top:12px">{{ s.errors|join('; ') }}</div>{% endif %}
+    </div>
+
+    <div class="card">
+      <div class="kv"><b>Planned reservations</b></div>
+      <table style="margin-top:10px">
+        <thead><tr><th>Node</th><th>Pool</th><th>Start (UTC)</th><th>End (UTC)</th><th>Hrs</th><th>Users</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+        {% for p in result.plan %}
+          <tr>
+            <td>{{ p.node_name }}</td>
+            <td class="mut">{{ p.pool_name }}</td>
+            <td>{{ p.date_start.strftime('%m-%d %H:%M') }}</td>
+            <td>{{ p.date_end.strftime('%m-%d %H:%M') }}</td>
+            <td>{{ '%.1f'|format(p.duration_hours) }}</td>
+            <td class="mut">{{ p.user_ids|length }}</td>
+            <td><span class="pill {{ p.status }}">{{ p.status }}</span></td>
+            <td class="mut">{{ p.reservation_id or p.message }}</td>
+          </tr>
+        {% endfor %}
+        {% if not result.plan %}
+          <tr><td colspan="8" class="mut">Nothing to reserve — all eligible nodes are booked to the horizon.</td></tr>
+        {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <details class="card">
+      <summary class="mut">Node eligibility ({{ result.nodes|length }} systems) & run log</summary>
+      <table style="margin-top:12px">
+        <thead><tr><th>Node</th><th>Pool</th><th>GPUs</th><th>Eligible</th><th>Reason</th></tr></thead>
+        <tbody>
+        {% for n in result.nodes %}
+          <tr><td>{{ n.name }}</td><td class="mut">{{ n.pool_name }}</td>
+              <td class="mut">{{ n.gpu_count if n.gpu_count is not none else '?' }}</td>
+              <td>{{ '✓' if n.eligible else '—' }}</td><td class="mut">{{ n.reason }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <pre style="margin-top:12px">{{ log|join('\n') }}</pre>
+    </details>
+  {% endif %}
+
+  <div class="card">
+    <div class="kv"><b>Recent runs</b></div>
+    <table style="margin-top:10px">
+      <thead><tr><th>When</th><th>Mode</th><th>Planned</th><th>Created</th><th>Failed</th><th>File</th></tr></thead>
+      <tbody>
+      {% for r in runs %}
+        <tr><td>{{ r.started_at }}</td><td>{{ 'COMMIT' if r.committed else 'dry-run' }}</td>
+            <td>{{ r.planned }}</td><td>{{ r.created }}</td><td>{{ r.failed }}</td>
+            <td class="mut">{{ r.file }}</td></tr>
+      {% endfor %}
+      {% if not runs %}<tr><td colspan="6" class="mut">No runs yet.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+
+</main>
+</body>
+</html>
