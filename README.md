@@ -40,21 +40,31 @@ cp config.example.yaml config.yaml     # then edit: team_name, users, pool ids, 
 
 ### Command line
 ```bash
-python cli.py whoami          # verify auth + list your teams
-python cli.py plan            # DRY-RUN: show exactly what would be reserved (no writes)
-python cli.py run --commit    # create the reservations (asks for a typed 'yes')
-python cli.py runs            # list past run summaries
-python cli.py plan -v         # verbose: live progress lines
+python cli.py whoami                 # verify auth + list your teams
+python cli.py status                 # which nodes are free & healthy (read-only report)
+python cli.py status --free          # only free & healthy + copy-paste rocm-smi / reserve cmds
+python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
+python cli.py run --commit           # create the reservations (asks for a typed 'yes')
+python cli.py run --commit --node N  # reserve a single node picked from `status`
+python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
+python cli.py sync-users             # add config's default users to existing reservations
+python cli.py runs                   # list past run summaries
 ```
+
+Shared flags on `plan` / `run` (and where noted): `--pool <id>` (repeatable, restrict pools),
+`--node <name>` (repeatable, restrict to specific nodes — short name or full hostname),
+`--yes` (skip the confirm prompt), `-v` (live progress). `run`/`cancel-small-gpu`/`sync-users`
+are **dry-run** until you add `--commit`.
 
 ### Web control app
 ```bash
 python app.py                 # http://127.0.0.1:5057
 ```
-- **Dry-run plan** — shows the full plan table (node, pool, start/end, users), no writes.
-- **Reserve for real** — tick the confirm box, then create. Live per-node result table
-  (created / failed with the server's reason) + run history. A run takes ≈1–2 min for all
-  nodes (one conflict check per node).
+- **Dry-run plan** / **Reserve for real** — plan table, then create (confirm box) with a live
+  per-node created/failed table + run history.
+- **Cancel card** — find/cancel our reservations on sub-`min_gpus` nodes.
+- **Sync-users card** — add the config's default users to existing reservations.
+- Node-eligibility table shows each node's GPU count + include/exclude reason.
 
 Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 
