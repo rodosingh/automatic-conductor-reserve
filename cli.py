@@ -42,6 +42,11 @@ def main(argv=None) -> int:
                         help="add config's default users to our existing (ongoing+upcoming) reservations")
     su.add_argument("--commit", action="store_true", help="actually update (default: dry-run)")
     su.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    st = sub.add_parser("status", parents=[common],
+                        help="report which nodes are free and healthy (from Conductor's scraped data)")
+    st.add_argument("--free", action="store_true", help="show only free & healthy nodes")
+    st.add_argument("--fast", action="store_true", help="skip the reservation check (health only)")
+    st.add_argument("--ssh-user", default=None, help="username for the printed rocm-smi ssh command")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -69,6 +74,9 @@ def main(argv=None) -> int:
 
     if args.cmd == "sync-users":
         return _sync_users(args)
+
+    if args.cmd == "status":
+        return _status(args)
 
     cfg = load_config()
     if getattr(args, "pool", None):
@@ -122,6 +130,60 @@ def _cancel_small_gpu(args) -> int:
         return 1
     out = cancel_small_gpu(cfg, commit=True)
     print(f"cancelled {len(out['cancelled'])} reservation(s): {', '.join(out['cancelled'])}")
+    return 0
+
+
+def _status(args) -> int:
+    """Report which nodes are free and healthy (Conductor scraped data + live reservations)."""
+    import os
+    from conductor_reserve.engine import status_report
+    cfg = load_config()
+    if getattr(args, "pool", None):
+        cfg = _filter_pools(cfg, args.pool)
+    ssh_user = args.ssh_user or cfg.get("ssh_user") or os.getenv("USER") or "<your-ntid>"
+    rows = status_report(cfg, check_reservations=not args.fast,
+                         progress=lambda m: print("·", m) if args.verbose else None)
+    if args.free:
+        rows = [r for r in rows if r["free_and_healthy"]]
+
+    def resv(r):
+        if r["reserved_now"] is None:
+            return "?"
+        if r["reserved_now"]:
+            return "busy→" + (r["free_at"] or "")[5:16]
+        fh = r["free_for_h"]
+        return "FREE" if fh == float("inf") else f"free {fh:.0f}h"
+
+    print(f"{'node':26} {'pool':22} {'gpu':>7} {'health':8} {'reserved':16} util24h")
+    print("-" * 92)
+    healthy_free = []
+    for r in sorted(rows, key=lambda r: (not r["free_and_healthy"], r["pool"], r["name"])):
+        gpu = f"{r['gpu_detected']}/{r['gpu_expected']}"
+        health = "OK" if r["healthy"] else "BAD"
+        if not r["healthy"]:
+            bad = []
+            if not r["reachable"]:
+                bad.append(r["reachability"] or "unreachable")
+            elif r["gpu_detected"] != r["gpu_expected"]:
+                bad.append(f"gpu {r['gpu_detected']}/{r['gpu_expected']}")
+            elif (r["gpu_detected"] or 0) < r["min_gpus"]:
+                bad.append(f"{r['gpu_detected']}gpu<min{r['min_gpus']}")
+            if r["disabled"]:
+                bad.append("disabled")
+            if r["archived"]:
+                bad.append("archived")
+            health = "BAD:" + ",".join(bad)[:22]
+        u = r["util_24h"]
+        print(f"{r['name'][:26]:26} {r['pool'][:22]:22} {gpu:>7} {health:8} {resv(r):16} "
+              f"{'' if u is None else str(u)[:6]}")
+        if r["free_and_healthy"]:
+            healthy_free.append(r)
+
+    print(f"\n{len(healthy_free)} free & healthy node(s).")
+    if healthy_free:
+        print("Check GPUs live (copy-paste):")
+        for r in healthy_free[:20]:
+            print(f"  ssh {ssh_user}@{r['hostname']} 'watch -n 0.2 rocm-smi'")
     return 0
 
 

@@ -44,3 +44,6 @@ policy:
   # Used only when the pool itself specifies no limit.
   default_duration_hours: 24
   default_horizon_days: 14
+
+# Username for the printed `ssh ... rocm-smi` command in `cli.py status`.
+ssh_user: "<your-ntid>"

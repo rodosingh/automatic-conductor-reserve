@@ -29,7 +29,20 @@ python cli.py cancel-small-gpu --commit   # actually cancel (asks you to type 'y
 # 5) SYNC USERS — add config's default users to our existing (ongoing+upcoming) reservations
 python cli.py sync-users                  # dry-run: lists reservations that would be updated
 python cli.py sync-users --commit         # add the default users (mode 'add' — never removes)
+
+# 6) STATUS — which nodes are free & healthy (from Conductor's scraped data; read-only)
+python cli.py status                      # table: gpu det/exp, health, reserved-now/free-for, util
+python cli.py status --free               # only free & healthy nodes + copy-paste rocm-smi cmds
+python cli.py status --fast               # skip the reservation check (health only, quicker)
+python cli.py status --pool <id>          # one pool
 ```
+
+`status` reports health from Conductor's own SSH-scraped data — reachability, detected-vs-expected
+GPU count, driver/ROCm, `disabled`, and 24h utilization — so it needs no SSH from your machine.
+For each **free & healthy** node it prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'` line
+(user from `--ssh-user` or `ssh_user` in config) so you can eyeball the GPUs live yourself —
+headless SSH to the nodes isn't reliable through the AIG auth gateway, so this is a copy-paste helper,
+not an automated probe.
 
 ### Flags for `run` and `cancel-small-gpu`
 
