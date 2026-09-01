@@ -40,13 +40,13 @@ python cli.py cancel-small-gpu --commit   # actually cancel (asks you to type 'y
 because the two have different limits and it's safer to verify one before the next:
 
 ```bash
-# pool C only (MI350X-AIG-SW-Models — its 4 named nodes, greedy to the ~14-day horizon)
-python cli.py run --commit --yes --pool 46c35d80-1e4a-4970-aaa1-d7269f3e67f7
+# pool C only (Pool-C-Models — its 4 named nodes, greedy to the ~14-day horizon)
+python cli.py run --commit --yes --pool <POOL_ID_3>
 
 # pools A + B (48h blocks — see the cap note below)
 python cli.py run --commit --yes \
-  --pool a58e25ad-9aaf-4f6c-87ad-138d08f56510 \
-  --pool d708f0af-1b34-4f07-8b73-ebbc1f584fd6
+  --pool <POOL_ID_1> \
+  --pool <POOL_ID_2>
 ```
 
 > A full `python cli.py run --commit` (no `--pool`) commits **all** configured pools in one go
@@ -80,7 +80,7 @@ python app.py               # open http://127.0.0.1:5057
     so each node gets **one block ending at the 48h mark** — a full 48h if free now, a shorter
     tail if it's busy until near the horizon. You **cannot** book a month there; the server
     rejects it (`exceeds furthest future reservation limit`).
-  - Pool **C** (MI350X-AIG-SW-Models) sets no limit, so the tool chains **24h blocks out to
+  - Pool **C** (Pool-C-Models) sets no limit, so the tool chains **24h blocks out to
     ~14 days** (`policy.default_horizon_days` / `default_duration_hours`).
 - **Never double-books:** existing reservations (yours or others') are read live and skipped;
   a node already booked by other teams for the whole window is simply left alone (re-run later
@@ -128,6 +128,9 @@ VERIFY_CERTS=false
 EOF
 chmod 600 .env
 
+# 3b) Create THEIR config from the template
+cp config.example.yaml config.yaml   # then edit team_name / users / pool ids
+
 # 4) Verify
 python cli.py whoami        # should print THEIR email + teams
 ```
@@ -135,7 +138,7 @@ python cli.py whoami        # should print THEIR email + teams
 ### Adjust config for the colleague
 Edit `config.yaml`:
 - **`reservation.team_name`** must be one of **their** teams (see `whoami` output).
-  `AIG-Training` is yours — theirs may differ.
+  `<your-team>` is yours — theirs may differ.
 - `reservation.users`, `title`, `project`, `milestone` as desired (they’re auto-included,
   so they don’t need to add themselves).
 - `pools[]` — they can only successfully reserve pools their teams can access; the server

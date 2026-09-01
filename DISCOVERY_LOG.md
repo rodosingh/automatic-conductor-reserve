@@ -11,8 +11,8 @@ maintainer (or a fresh session) can reconstruct the reasoning without re-doing t
 Automate reservation of AMD Conductor **standalone conductor nodes** across two shared
 pools, greedily, until every eligible node's reservation window is exhausted:
 
-- Pool A: `a58e25ad-9aaf-4f6c-87ad-138d08f56510`
-- Pool B: `d708f0af-1b34-4f07-8b73-ebbc1f584fd6`
+- Pool A: `<POOL_ID_1>`
+- Pool B: `<POOL_ID_2>`
 
 For each eligible node, create a reservation with fixed defaults (title, project,
 description, milestone, team, users, "disable batch jobs" checkbox), computing
@@ -27,20 +27,19 @@ it in a system that can be triggered manually.
 - The two pool URLs (Pool A / Pool B above).
 - The fixed reservation defaults: Title `Hyperloom-E2E-expt`, Project `Hyperloom`,
   Description "This is a test reservation for the Hyperloom project.", Milestone
-  `30-09-2026`, default users **Dubagunta Subrahmanya Pavankumar** and **Saptarshi
-  Majumder**, checkboxes (disable batch jobs, create-another, preserve-fields), submit.
+  `30-09-2026`, default users **<teammate1>** and **<teammate2>**, checkboxes (disable batch jobs, create-another, preserve-fields), submit.
 - **Screenshot 1 — the reservation form.** Revealed fields not in the text spec: a required
-  **"Team for Allocation"** dropdown (shown = `AIG-Training`), a **"Next Available
+  **"Team for Allocation"** dropdown (shown = `<your-team>`), a **"Next Available
   Reservation"** tab (the system computes free slots itself), an "Existing Reservations"
   table (Active/Upcoming), and the per-pool hint text *"reservations up to 2 days in the
   future"* / *"duration of up to 48 hrs"* — i.e. constraints are data, per pool.
-- **The API key** `qTfYv3…` (stored only in `.env`, mode 600; never logged/committed).
+- **The API key** `<redacted>` (stored only in `.env`, mode 600; never logged/committed).
 - **Screenshot 2 — DevTools cookies** for conductor.amd.com, used to identify the auth
   cookie: `session` (HttpOnly, Secure, domain `.conductor.amd.com`). (In the end we didn't
   need the cookie — the API key path is durable — but it confirmed the cookie name.)
-- **Two candidate emails**: `adityakumar.singh@amd.com` **or** `aditysin@amd.com`. We tested
-  both live (see §4): the first authenticates (200); `aditysin@amd.com` as an email → 401.
-  (Note: `aditysin` works as an **NTID for user lookup**, just not as the auth email.)
+- **Two candidate emails**: `you@amd.com` **or** `your-ntid@amd.com`. We tested
+  both live (see §4): the first authenticates (200); `your-ntid@amd.com` as an email → 401.
+  (Note: the NTID works for **user lookup**, just not as the auth email.)
 - Later: two follow-up documentation requests, and the "how do colleagues run it / API key?"
   question (→ `HOW_TO_RUN.md`).
 
@@ -105,7 +104,7 @@ This took the most iterations. Chronology:
    - `401 {"message":"value is missing from Cookie header"}` = endpoint **exists**.
    - `404` = absent. `405` = exists, wrong method. → We could verify paths without creds.
 2. Found `/api/v1/api_key` (GET/POST/PUT) → self-service API keys exist. The user provided
-   an API key: `qTfYv3…` (stored only in `.env`, mode 600).
+   an API key: `<redacted>` (stored only in `.env`, mode 600).
 3. **Dead-end:** tried the key in ~40 placements — `Authorization: Bearer <k>`,
    `x-api-key`, `api-key`, `X-Auth-Token`, and as a cookie under `session`, `token`,
    `access_token`, `sessionid`, `conductor_session`, … **All** returned the identical
@@ -133,7 +132,7 @@ This took the most iterations. Chronology:
    That's the one format never tried. The server also accepts `Cookie: session=…`.
 9. **Confirmed live:** `Authorization: test@amd.com:<key>` changed the error to
    `401 "Provided Authorization header is invalid"` (mechanism correct, wrong owner). With
-   the real owner email `adityakumar.singh@amd.com` → **HTTP 200**, full identity returned. ✅
+   the real owner email `you@amd.com` → **HTTP 200**, full identity returned. ✅
 
 **Learning:** black-box header/cookie guessing is a poor substitute for finding the
 official client. The docs site + installed SDK source resolved in minutes what dozens of
@@ -161,10 +160,10 @@ needs the `email:key` framing the SDK does for us.
 
 Every call below was run against production with **zero writes**:
 
-- **Identity:** `MyResources().user` → email/id/teams. Teams include **AIG-Training**
+- **Identity:** `MyResources().user` → email/id/teams. Teams include **<your-team>**
   (the "Team for Allocation" default) and **Hyperloom** (the project).
 - **Pools:** `PoolQuerier().find_pool_by_id()` (returns a **list** — normalize to `[0]`).
-  Pool A = *MI300X-AIG-SW-Shared-Pool* (7 systems), Pool B = *MI350X-AIG-SW-Shared-Pool*
+  Pool A = *Pool-A-Shared* (7 systems), Pool B = *Pool-B-Shared*
   (46 systems). Both `reservation_strategy=calendar`, `block_api_access=False`,
   `group_restrictions_met=True`.
   - **Constraints are in SECONDS:** `reservation_duration_limit=172800` (48h),
@@ -176,12 +175,12 @@ Every call below was run against production with **zero writes**:
   gate reservations.** Real eligibility = strategy==calendar ∧ not archived ∧ not
   `block_api_access` ∧ `group_restrictions_met`. `reservation_only` nodes are reservable.
 - **Users:** `UserQuerier().lookup_advanced(user=[…])`.
-  - **Error/learning:** partial surname ("Majumder") → **0 matches**. Names are stored
-    **"Last, First"**; `user=["Majumder, Saptarshi"]` and exact lowercase **email** both
-    resolve. NTID (e.g. `aditysin`) also resolves. Resolved all three:
-    - Aditya Kumar Singh `e8d59de6-…` (creator, auto-included)
-    - Saptarshi Majumder `d6db6c19-…` (`saptarshi.majumder@amd.com`)
-    - Subrahmanya Pavankumar Dubagunta `e3d783a6-…` (`subrahmanyapavankumar.dubagunta@amd.com`)
+  - **Error/learning:** partial surname (a last name alone) → **0 matches**. Names are stored
+    **"Last, First"**; `user=["<teammate1>"]` and exact lowercase **email** both
+    resolve. NTID also resolves. Resolved all three:
+    - <you> `e8d59de6-…` (creator, auto-included)
+    - <teammate1> `d6db6c19-…` (`teammate1@amd.com`)
+    - <teammate2> `e3d783a6-…` (`teammate2@amd.com`)
 - **Create schema (`ats_models…reservations/actions/create.CreateReservation`):**
   `title(≥3)`, `description?`, `project(≥3)`, `milestone(datetime)`, `target_id(UUID)`,
   `team_id(UUID)`, `user_ids[UUID]?(≤50)`, `date_start?(def now)`, `date_end`,
@@ -253,9 +252,9 @@ reservations cover the whole window), confirming the scheduler skips busy nodes 
     to `PlanItem`, set it in the scheduler, and passed it cleanly into the create payload.
 - **Tests run (all against production):**
   - `cli.py whoami` → correct identity + 4 teams (ml-framework, MI325-AMD-FWCollab,
-    AIG-Training, Hyperloom).
+    <your-team>, Hyperloom).
   - Full **dry-run** `cli.py plan` → 53/53 nodes enumerated, **4** reservations planned
-    (splinter-odcdh4-wbc1-c, banff-sc-cx43-05, banff-ccs-aus-g04-05, smci350-rck-g03-b17-03),
+    (node-a1, node-a2, node-a3, node-b1),
     each ~47.5h. **Zero writes.**
   - Spot-check of non-planned Pool-A nodes via `check_conflicts` → each already has a 48h
     reservation covering the window (correctly skipped, not a bug).
