@@ -33,6 +33,7 @@ python cli.py sync-users --commit         # add the default users (mode 'add' â€
 # 6) STATUS â€” which nodes are free & healthy (from Conductor's scraped data; read-only)
 python cli.py status                      # table: gpu det/exp, health, reserved-now/free-for, util
 python cli.py status --free               # only free & healthy nodes + copy-paste rocm-smi cmds
+python cli.py status --reserved           # only currently-reserved nodes: who holds them + until when
 python cli.py status --fast               # skip the reservation check (health only, quicker)
 python cli.py status --pool <id>          # one pool
 ```
