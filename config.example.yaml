@@ -1,0 +1,46 @@
+# Hyperloom auto-reservation config — EXAMPLE / TEMPLATE.
+# Copy to config.yaml and fill in your real values:  cp config.example.yaml config.yaml
+# config.yaml is gitignored (kept local). Credentials live in .env (never here).
+
+reservation:
+  title: "Hyperloom-E2E-expt"
+  project: "Hyperloom"
+  description: "This is a test reservation for the Hyperloom project."
+  # Milestone / Deadline (the reservation's deadline). Must be >= every reservation end.
+  # Format: YYYY-MM-DD. Default ~1 month out.
+  milestone: "2026-09-30"
+  # "Team for Allocation" dropdown. Resolved to a team_id from your team memberships
+  # (run `python cli.py whoami` to list yours).
+  team_name: "<your-team-for-allocation>"
+  # Disable batch jobs on system for duration of reservation (form checkbox).
+  batch_opt_out: true
+  # Extra users to add besides yourself (you are always auto-included by the server).
+  # Entries may be an email, a "Last, First" full name, or a raw user UUID.
+  users:
+    - "teammate1@amd.com"
+    - "teammate2@amd.com"
+
+pools:
+  - id: "<POOL_ID_1>"          # e.g. a shared MI300X pool
+  - id: "<POOL_ID_2>"          # e.g. a shared MI350X pool
+  - id: "<POOL_ID_3>"          # a pool where you only want specific nodes
+    # Only reserve these nodes from this pool; ignore the rest.
+    # Entries may be the short name or the full hostname (domain is stripped for matching).
+    only_nodes:
+      - "<node-name-1>"
+      - "<node-name-2>"
+
+policy:
+  # Greedy fill: for each eligible node, chain back-to-back reservations up to the pool's
+  # future horizon. Server enforces the real limits per pool; these are safety rails.
+  max_nodes: null                 # cap number of nodes touched per run (null = all eligible)
+  max_reservations_per_node: null # cap chained reservations per node (null = fill horizon)
+  min_reservation_minutes: 60     # skip free gaps shorter than this
+  round_minutes: 10               # server rounds to 10-min marks; match it
+  start_lead_minutes: 20          # never start earlier than now + this many minutes
+  # Exclude nodes with fewer than this many GPUs.
+  min_gpus: 2
+  # Fallback limits for pools that set NO reservation_duration_limit / furthest_future.
+  # Used only when the pool itself specifies no limit.
+  default_duration_hours: 24
+  default_horizon_days: 14

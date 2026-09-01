@@ -25,9 +25,15 @@ pip install conductor_sdk flask pyyaml \
 Credentials live in **`.env`** (mode 600, gitignored):
 
 ```
-AMD_EMAIL=adityakumar.singh@amd.com
+AMD_EMAIL=you@amd.com
 ATS_SECRET=<your Conductor API key>     # Conductor UI > profile > API key
 VERIFY_CERTS=false
+```
+
+Config lives in **`config.yaml`** (gitignored — keep your real values local):
+
+```bash
+cp config.example.yaml config.yaml     # then edit: team_name, users, pool ids, only_nodes
 ```
 
 ## Use
@@ -69,21 +75,23 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `policy.max_reservations_per_node` | cap chained reservations per node (`null` = fill horizon) |
 | `policy.min_reservation_minutes` | skip free gaps shorter than this |
 | `policy.start_lead_minutes` | never start earlier than now + this |
-| `policy.default_duration_hours` / `default_horizon_hours` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
+| `policy.min_gpus` | exclude nodes with fewer than this many GPUs |
+| `policy.default_duration_hours` / `default_horizon_days` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
 
 ## How eligibility & scheduling work
 
 - **Eligible pool:** `reservation_strategy == "calendar"`, not archived, `block_api_access`
   false, group restrictions met.
-- **Eligible node:** in an eligible pool and not archived. (Cosmetic `status` is ignored —
-  the SDK states it must not affect reservations. `reservation_only` nodes are included.)
-- **Greedy plan (per node):** from `now + start_lead` to `now + pool.furthest_future`,
-  tile the free time (discovered via the server's `check_conflicts`) with back-to-back
-  reservations of up to `pool.reservation_duration_limit`, rounded to 10-minute marks,
-  splitting around existing bookings. Both current pools cap at 48h, so in practice this is
-  ~one 48h reservation per free node.
-- **Commit:** creates via the SDK; the server's `notes` explains any per-node failure
-  (already reserved / no access). We never double-book.
+- **Eligible node:** in an eligible pool, not archived, and with at least `policy.min_gpus`
+  GPUs. (Cosmetic `status` is ignored — the SDK states it must not affect reservations.
+  `reservation_only` nodes are included.)
+- **Greedy plan (per node):** tile the node's free time — read from the **actual reservation
+  list** — with back-to-back reservations of up to `pool.reservation_duration_limit`, each
+  **ending by `now + pool.furthest_future`** (a hard server cap on `date_end`), rounded to
+  10-minute marks. Pools that cap at 48h yield ~one block ending at the 48h mark; pools with
+  no limit chain out to `policy.default_horizon_days`.
+- **Commit:** creates each reservation individually via the SDK; a `422 overlaps` means the
+  slot is already taken (never double-booked), any other error is reported per node.
 
 ## Do we need an LLM "agent"?
 

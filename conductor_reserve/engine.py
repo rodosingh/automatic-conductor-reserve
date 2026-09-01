@@ -18,7 +18,7 @@ LOG = logging.getLogger("conductor_reserve.engine")
 
 def _norm(hostname: str) -> str:
     """Normalize a node name/hostname for matching: first dot-label, lower-cased.
-    So 'cv350-tnndh2-b05-1.tnn.dcgpu' and 'cv350-tnndh2-b05-1' compare equal."""
+    So 'node-01.example.internal' and 'node-01' compare equal."""
     return str(hostname).strip().split(".")[0].lower()
 
 
