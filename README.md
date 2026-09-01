@@ -78,15 +78,23 @@ the failure reason per node. Configure it under `health_probe`; disable with `--
 |---|---|---|---|
 | `broken` | We logged in and the box is unusable (0/too few GPUs, no `rocm-smi`, dead Docker) | no | yes |
 | `unreachable` | Nothing answered — timeout, closed, refused | no | yes |
-| `access` | We could not log in (key rejected / password wanted) | **yes** | only with `--include-access` |
+| `access` | We could not log in — usually just means *we don't hold the node right now* | **yes** | only with `--include-access` |
 
-`access` is deliberately not disqualifying: it describes *our credentials*, not the machine.
-Blocking on it is a trap — the tool would stop reserving the node and so never regain the
-access needed to check it. On this fleet, nodes have been reachable *without* a reservation
-and denied *while* holding one, so login success is not a proxy for health.
+**SSH access is largely gated on holding an active reservation.** On much of this fleet you
+can only log into a node while one of your reservations on it is active. Measured directly:
+two nodes logged in fine while held (revealing `0 GPUs` and `no rocm-smi`); minutes after we
+released them, the same key on the same machines returned `permission denied`. It isn't
+absolute — a few nodes probe fine unreserved, and two stayed denied while held — but it is
+the dominant factor.
 
-The result is a self-correcting loop: **reserve broadly → probe while the reservation is
-active → release what the probe proves is broken.** Tune with `health_probe.block_classes`.
+So a probe verdict is only meaningful for nodes you currently hold; elsewhere `access` means
+*unknown*, not *bad*. And it must never block reserving: one failed login would stop the node
+being booked, which removes the access needed to check it again — locking the node out
+permanently on one ambiguous result.
+
+Hence the self-correcting loop: **reserve broadly → probe while the reservation is active →
+release only what the probe proves is broken.** To assess one node, reserve it, wait for the
+reservation to go active, then run `status`. Tune with `health_probe.block_classes`.
 
 ### Web control app
 ```bash

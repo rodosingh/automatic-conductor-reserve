@@ -74,17 +74,35 @@ A failure is classified, and only some classes disqualify a node:
 |---|---|---|---|
 | `broken` | We **logged in** and the box is unusable — 0/too few GPUs, no `rocm-smi`, dead Docker. | no | yes |
 | `unreachable` | Nothing answered — timeout, connection closed/refused, no route. | no | yes |
-| `access` | We **could not log in** (key rejected / password wanted). | **yes** | only with `--include-access` |
+| `access` | We **could not log in** (key rejected / password wanted). Usually just means *we don't hold the node right now*. | **yes** | only with `--include-access` |
 
-`access` is deliberately not disqualifying. It is a fact about *our credentials*, not about
-the machine — and blocking on it is a trap: the tool would stop reserving the node, so we
-would never regain the access needed to check it. Observed on this fleet: nodes have been
-reachable **without** holding a reservation, and denied **while** holding one, so login
-success is not a proxy for health and must not gate booking.
+#### SSH access is largely gated on holding an active reservation
 
-That gives a self-correcting loop: **reserve broadly → probe while the reservation is
-active → release what the probe proves is broken** (`cancel-unhealthy`). Change which
-classes disqualify a node with `health_probe.block_classes` in `config.yaml`.
+This is the single most important thing to understand about the probe. On much of this
+fleet you can only log into a node **while one of your reservations on it is active**.
+
+Measured directly: `banff-ccs-aus-g04-05` and `dell300x-ccs-aus-f03-19` both logged in fine
+while we held them (revealing `0 GPUs` and `no rocm-smi` respectively). We released those
+reservations, re-probed minutes later, and both returned `permission denied`. Same key, same
+machine, same network — the only thing that changed was that we no longer held them.
+
+It is not an absolute rule: a few pool-C nodes probe fine with no reservation, and two nodes
+stayed denied *while* held. So holding a reservation is neither strictly necessary nor
+sufficient — but it is the dominant factor.
+
+Two consequences the tool is built around:
+
+- **A probe verdict is only meaningful for nodes you currently hold.** For everything else,
+  `access` means *unknown*, not *bad*. That is why it is never reported as a fault.
+- **`access` must not block reserving.** If it did, one failed login would stop the node
+  being reserved, which would remove the access needed to ever check it again — the node
+  would be locked out permanently on the strength of a single ambiguous result.
+
+So the workflow is a self-correcting loop: **reserve broadly → probe while the reservation
+is active → release only what the probe proves is broken** (`cancel-unhealthy`). To assess
+one specific node, reserve it first (`run --commit --node <name>`), wait for the reservation
+to become active, then run `status`. Change which classes disqualify a node with
+`health_probe.block_classes` in `config.yaml`.
 
 For each free & healthy node `status` also prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'`
 line (user from `--ssh-user` or `ssh_user`) so you can eyeball the GPUs live yourself.
