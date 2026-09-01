@@ -19,6 +19,10 @@ class NodeInfo:
     gpu_count: Optional[int]
     eligible: bool
     reason: str = ""  # why ineligible (empty when eligible)
+    hostname: Optional[str] = None
+    # Filled by the SSH health probe (None = not probed).
+    probe_ok: Optional[bool] = None
+    probe_reason: str = ""
 
 
 @dataclass

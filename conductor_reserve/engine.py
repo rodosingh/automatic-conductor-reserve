@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import scheduler
+from . import probe, scheduler
 from .conductor import ConductorClient
 from .models import RunResult
 from .notify import write_run_log
@@ -34,13 +34,81 @@ def _merge_iv(intervals):
     return merged
 
 
+def _enumerate_nodes(client: ConductorClient, config: dict, emit):
+    """Every configured pool's systems, with each pool's `only_nodes` filter applied.
+
+    Returns (pairs, pools, nodes, errors); `pairs` are the (node, pool) tuples that pass
+    Conductor-side eligibility. Shared by `run` and `cancel_unhealthy` so both see exactly
+    the same node set.
+    """
+    min_gpus = int(config.get("policy", {}).get("min_gpus", 2))
+    pairs, pools, all_nodes, errors = [], [], [], []
+    for entry in config["pools"]:
+        pool = client.get_pool(entry["id"])
+        pools.append(pool)
+        emit(f"pool {pool.name}: "
+             + ("eligible" if pool.eligible else f"INELIGIBLE ({pool.reason})"))
+        nodes = client.list_nodes(pool, min_gpus=min_gpus)
+
+        only = entry.get("only_nodes")
+        if only:
+            wanted = {_norm(x) for x in only}
+            selected = [n for n in nodes if _norm(n.name) in wanted]
+            found = {_norm(n.name) for n in selected}
+            missing = [x for x in only if _norm(x) not in found]
+            if missing:
+                errors.append(f"pool {pool.name}: only_nodes not found: {', '.join(missing)}")
+                emit(f"  WARNING: only_nodes not found in pool: {', '.join(missing)}")
+            emit(f"  restricted to {len(selected)}/{len(nodes)} named node(s)")
+            nodes = selected
+
+        all_nodes.extend(nodes)
+        pairs.extend((n, pool) for n in nodes if n.eligible)
+        emit(f"  {sum(1 for n in nodes if n.eligible)}/{len(nodes)} systems eligible")
+    return pairs, pools, all_nodes, errors
+
+
+def _probe_filter(config: dict, pairs: list, emit) -> tuple[list, list]:
+    """Split (node, pool) pairs by the live SSH health probe.
+
+    A node is healthy only if we can log in with our key (no password), `rocm-smi` reports
+    at least min_gpus GPUs, and `docker ps` works. Annotates each NodeInfo with
+    probe_ok/probe_reason and marks failures ineligible. Returns (healthy, unhealthy).
+    """
+    settings = probe.probe_settings(config)
+    if not settings["user"]:
+        emit("WARNING: no ssh_user / health_probe.user configured — skipping health probe")
+        return pairs, []
+    min_gpus = int(config.get("policy", {}).get("min_gpus", 2))
+    hosts = sorted({(n.hostname or n.name) for n, _ in pairs})
+    emit(f"SSH health probe on {len(hosts)} node(s) as {settings['user']}...")
+    results = probe.probe_hosts(
+        hosts, user=settings["user"], key=settings["key"], min_gpus=min_gpus,
+        timeout_s=settings["timeout_s"], workers=settings["workers"], progress=emit)
+
+    healthy, unhealthy = [], []
+    for node, pool in pairs:
+        r = results.get(node.hostname or node.name) or {"ok": False, "reason": "not probed"}
+        node.probe_ok, node.probe_reason = bool(r["ok"]), r["reason"]
+        if r["ok"]:
+            healthy.append((node, pool))
+        else:
+            node.eligible = False
+            node.reason = "; ".join(x for x in (node.reason, r["reason"]) if x)
+            unhealthy.append((node, pool))
+    emit(f"health probe: {len(healthy)} healthy, {len(unhealthy)} unhealthy")
+    return healthy, unhealthy
+
+
 def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient] = None,
-        progress=None, node_names: Optional[list] = None) -> RunResult:
+        progress=None, node_names: Optional[list] = None,
+        probe_health: bool = True) -> RunResult:
     """Execute one planning (and optionally committing) run.
 
     progress: optional callable(str) for live status lines (used by the web UI).
     node_names: if given, restrict to eligible nodes whose name matches one of these
         (domain-insensitive) — e.g. reserve a single node picked from `status`.
+    probe_health: SSH-probe each candidate node and reserve only the healthy ones.
     """
     def emit(msg: str):
         LOG.info(msg)
@@ -80,33 +148,10 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
 
     # 1) enumerate pools + nodes
     max_nodes = policy.get("max_nodes")
-    min_gpus = int(policy.get("min_gpus", 2))
-    eligible_nodes = []
-    for entry in config["pools"]:
-        pool = client.get_pool(entry["id"])
-        result.pools.append(pool)
-        tag = "eligible" if pool.eligible else f"INELIGIBLE ({pool.reason})"
-        emit(f"pool {pool.name}: {tag}")
-        nodes = client.list_nodes(pool, min_gpus=min_gpus)
-
-        only = entry.get("only_nodes")
-        if only:
-            wanted = {_norm(x) for x in only}
-            selected = [n for n in nodes if _norm(n.name) in wanted]
-            found = {_norm(n.name) for n in selected}
-            missing = [x for x in only if _norm(x) not in found]
-            if missing:
-                result.errors.append(
-                    f"pool {pool.name}: only_nodes not found: {', '.join(missing)}")
-                emit(f"  WARNING: only_nodes not found in pool: {', '.join(missing)}")
-            emit(f"  restricted to {len(selected)}/{len(nodes)} named node(s)")
-            nodes = selected
-
-        result.nodes.extend(nodes)
-        for n in nodes:
-            if n.eligible:
-                eligible_nodes.append((n, pool))
-        emit(f"  {sum(1 for n in nodes if n.eligible)}/{len(nodes)} systems eligible")
+    eligible_nodes, pools, nodes, errors = _enumerate_nodes(client, config, emit)
+    result.pools.extend(pools)
+    result.nodes.extend(nodes)
+    result.errors.extend(errors)
 
     if node_names:
         want = {_norm(x) for x in node_names}
@@ -118,6 +163,12 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
             result.errors.append("requested nodes not eligible/found: " + ", ".join(missing))
             emit("WARNING: requested nodes not eligible/found: " + ", ".join(missing))
         emit(f"restricted to {len(eligible_nodes)}/{before} eligible node(s) by --node")
+
+    # 1b) only reserve nodes we can actually use (ssh + rocm-smi + docker)
+    if probe_health and probe.probe_settings(config)["enabled"]:
+        eligible_nodes, unhealthy = _probe_filter(config, eligible_nodes, emit)
+        for n, _ in unhealthy:
+            emit(f"  skipping {n.name}: {n.probe_reason}")
 
     if max_nodes is not None:
         eligible_nodes = eligible_nodes[: int(max_nodes)]
@@ -209,14 +260,81 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
             "found": found, "cancelled": cancelled, "committed": bool(commit)}
 
 
+def cancel_unhealthy(config: dict, *, commit: bool = False,
+                     client: Optional[ConductorClient] = None, progress=None) -> dict:
+    """Find (and, with commit=True, cancel) our reservations on nodes that fail the SSH
+    health probe — unreachable, no key-only login, no working rocm-smi, or no working docker.
+
+    Scoped to reservations carrying our configured title, i.e. the ones this tool created.
+    A colleague's own reservation on the same node is never touched, even if they are one
+    of our default users.
+    """
+    def emit(msg: str):
+        LOG.info(msg)
+        if progress:
+            progress(msg)
+
+    client = client or ConductorClient()
+    title = config["reservation"]["title"]
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    healthy, unhealthy = _probe_filter(config, pairs, emit)
+
+    nodes = [{"name": n.name, "hostname": n.hostname, "pool": n.pool_name,
+              "id": n.id, "reason": n.probe_reason} for n, _ in unhealthy]
+    by_id = {n["id"]: n for n in nodes}
+    found = client.find_our_reservations([n["id"] for n in nodes], set(), {title})
+    for r in found:
+        node = by_id.get(r["node_id"], {})
+        r["node_name"] = node.get("name", r["node_id"])
+        r["node_reason"] = node.get("reason", "")
+        r["date_start"] = str(r.get("date_start"))
+        r["date_end"] = str(r.get("date_end"))
+    emit(f"{len(unhealthy)} unhealthy node(s); our reservations on them: {len(found)}")
+
+    cancelled: list[str] = []
+    if commit and found:
+        cancelled = client.cancel_reservations([r["id"] for r in found])
+        emit(f"cancelled {len(cancelled)} reservation(s)")
+    return {"title": title, "healthy": len(healthy), "unhealthy_nodes": nodes,
+            "found": found, "cancelled": cancelled, "committed": bool(commit)}
+
+
+def _conductor_health_reason(h: dict, min_gpus: int) -> str:
+    """Why Conductor's own scraped data considers a node unhealthy (probe disabled)."""
+    bad = []
+    if not h["reachable"]:
+        bad.append(h["reachability"] or "unreachable")
+    elif h["gpu_detected"] != h["gpu_expected"]:
+        bad.append(f"gpu {h['gpu_detected']}/{h['gpu_expected']}")
+    elif (h["gpu_detected"] or 0) < min_gpus:
+        bad.append(f"{h['gpu_detected']}gpu<min{min_gpus}")
+    if h["disabled"]:
+        bad.append("disabled")
+    if h["archived"]:
+        bad.append("archived")
+    return "; ".join(bad)
+
+
+def cancel_ids(reservation_ids: list[str], *,
+               client: Optional[ConductorClient] = None) -> list[str]:
+    """Cancel exactly these reservation ids.
+
+    Used after a reviewed dry-run so the commit cancels precisely the list the user was
+    shown — re-running discovery could return a different set (the probe is live).
+    """
+    client = client or ConductorClient()
+    return client.cancel_reservations(list(reservation_ids))
+
+
 def status_report(config: dict, *, client: Optional[ConductorClient] = None,
                   check_reservations: bool = True, window_hours: int = 48,
-                  progress=None) -> list[dict]:
-    """Read-only 'free & healthy' report for every eligible node across configured pools.
+                  probe_health: bool = True, progress=None) -> list[dict]:
+    """Read-only 'free & healthy' report for every node across configured pools.
 
-    Health comes from Conductor's scraped data; free/busy from the live reservation list.
-    window_hours: how far ahead to look for reservations (48h for free/busy; widen it to
-    capture your full holdings for a 'reserved by me' view).
+    Health is the live SSH probe (key-only login + rocm-smi + docker), falling back to
+    Conductor's scraped data when the probe is disabled. Free/busy comes from the live
+    reservation list. window_hours: how far ahead to look for reservations (48h for
+    free/busy; widen it to capture your full holdings for a 'reserved by me' view).
     """
     from datetime import timedelta
 
@@ -230,6 +348,7 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
     min_gpus = int(policy.get("min_gpus", 2))
     now = datetime.now(timezone.utc)
     my_email = (client.me().get("email") or "").lower()
+
     rows: list[dict] = []
     for entry in config["pools"]:
         pool = client.get_pool(entry["id"])
@@ -242,36 +361,73 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
                 continue
             h["gpu_ok"] = (h["gpu_detected"] is not None and h["gpu_expected"] is not None
                            and h["gpu_detected"] == h["gpu_expected"] and h["gpu_detected"] >= min_gpus)
-            h["healthy"] = h["reachable"] and h["gpu_ok"] and not h["disabled"] and not h["archived"]
-            h["reserved_now"] = None
-            h["free_for_h"] = None
-            h["free_at"] = None
-            h["reserved_by_me"] = False
-            h["mine"] = []
-            if check_reservations:
-                resv = client.reservations_window(h["id"], now, now + timedelta(hours=window_hours))
-                intervals = _merge_iv([(r["date_start"], r["date_end"]) for r in resv])
-                active = [iv for iv in intervals if iv[0] <= now < iv[1]]
-                h["reserved_now"] = bool(active)
-                if active:
-                    h["free_at"] = max(iv[1] for iv in active).isoformat()
-                else:
-                    upcoming = [iv[0] for iv in intervals if iv[0] > now]
-                    h["free_for_h"] = ((min(upcoming) - now).total_seconds() / 3600.0
-                                       if upcoming else float("inf"))
-                # which of these are mine (creator/member by email)?
-                mine = [r for r in resv
-                        if my_email in [(e or "").lower() for e in r["users"]]]
-                if mine:
-                    mine.sort(key=lambda r: r["date_start"])
-                    h["reserved_by_me"] = True
-                    h["mine"] = [{"title": r["title"],
-                                  "date_start": r["date_start"].isoformat(),
-                                  "date_end": r["date_end"].isoformat(),
-                                  "active": r["date_start"] <= now < r["date_end"]}
-                                 for r in mine]
-            h["free_and_healthy"] = bool(h["healthy"] and h["reserved_now"] is False)
+            h.update(probe_ok=None, probe_reason="", probe_gpus=None, probe_docker=None)
             rows.append(h)
+
+    # Live SSH probe — the authoritative verdict. Skip nodes we'd never reserve anyway
+    # (too few GPUs, archived) so we don't spend connections on them.
+    settings = probe.probe_settings(config)
+    do_probe = bool(probe_health and settings["enabled"] and settings["user"])
+    if do_probe:
+        candidates = [h for h in rows
+                      if (h["gpu_expected"] or 0) >= min_gpus and not h["archived"]]
+        hosts = sorted({h["hostname"] or h["name"] for h in candidates})
+        emit(f"SSH health probe on {len(hosts)} node(s) as {settings['user']}...")
+        results = probe.probe_hosts(
+            hosts, user=settings["user"], key=settings["key"], min_gpus=min_gpus,
+            timeout_s=settings["timeout_s"], workers=settings["workers"], progress=emit)
+        for h in candidates:
+            r = results.get(h["hostname"] or h["name"])
+            if r:
+                h["probe_ok"], h["probe_reason"] = bool(r["ok"]), r["reason"]
+                h["probe_gpus"], h["probe_docker"] = r["gpus"], r["docker"]
+
+    for h in rows:
+        if do_probe:
+            bad = []
+            if h["probe_ok"] is None:
+                bad.append(f"{h['gpu_expected']}gpu<min{min_gpus}"
+                           if (h["gpu_expected"] or 0) < min_gpus else "not probed")
+            elif not h["probe_ok"]:
+                bad.append(h["probe_reason"])
+            if h["disabled"]:
+                bad.append("disabled")
+            if h["archived"]:
+                bad.append("archived")
+            h["healthy"] = not bad
+            h["health_reason"] = "; ".join(bad)
+        else:
+            h["healthy"] = h["reachable"] and h["gpu_ok"] and not h["disabled"] and not h["archived"]
+            h["health_reason"] = "" if h["healthy"] else _conductor_health_reason(h, min_gpus)
+
+        h["reserved_now"] = None
+        h["free_for_h"] = None
+        h["free_at"] = None
+        h["reserved_by_me"] = False
+        h["mine"] = []
+        if check_reservations:
+            resv = client.reservations_window(h["id"], now, now + timedelta(hours=window_hours))
+            intervals = _merge_iv([(r["date_start"], r["date_end"]) for r in resv])
+            active = [iv for iv in intervals if iv[0] <= now < iv[1]]
+            h["reserved_now"] = bool(active)
+            if active:
+                h["free_at"] = max(iv[1] for iv in active).isoformat()
+            else:
+                upcoming = [iv[0] for iv in intervals if iv[0] > now]
+                h["free_for_h"] = ((min(upcoming) - now).total_seconds() / 3600.0
+                                   if upcoming else float("inf"))
+            # which of these are mine (creator/member by email)?
+            mine = [r for r in resv
+                    if my_email in [(e or "").lower() for e in r["users"]]]
+            if mine:
+                mine.sort(key=lambda r: r["date_start"])
+                h["reserved_by_me"] = True
+                h["mine"] = [{"title": r["title"],
+                              "date_start": r["date_start"].isoformat(),
+                              "date_end": r["date_end"].isoformat(),
+                              "active": r["date_start"] <= now < r["date_end"]}
+                             for r in mine]
+        h["free_and_healthy"] = bool(h["healthy"] and h["reserved_now"] is False)
     return rows
 
 
