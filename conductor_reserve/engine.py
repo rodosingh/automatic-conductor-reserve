@@ -198,7 +198,8 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
 
 
 def status_report(config: dict, *, client: Optional[ConductorClient] = None,
-                  check_reservations: bool = True, progress=None) -> list[dict]:
+                  check_reservations: bool = True, with_holder: bool = False,
+                  progress=None) -> list[dict]:
     """Read-only 'free & healthy' report for every eligible node across configured pools.
 
     Health comes from Conductor's scraped data; free/busy from the live reservation list.
@@ -236,6 +237,8 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
                 h["reserved_now"] = bool(active)
                 if active:
                     h["free_at"] = max(b[1] for b in active).isoformat()
+                    if with_holder:
+                        h["holders"] = client.active_reservations(h["id"], now)
                 else:
                     upcoming = [b[0] for b in busy if b[0] > now]
                     h["free_for_h"] = ((min(upcoming) - now).total_seconds() / 3600.0

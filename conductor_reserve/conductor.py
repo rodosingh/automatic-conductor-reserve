@@ -284,6 +284,30 @@ class ConductorClient:
                 break
         return out
 
+    def active_reservations(self, node_id: str, at=None) -> list[dict]:
+        """Reservations active on a node at a given time (default now): title, end, users.
+        Read-only. Used to show WHO holds a currently-reserved node."""
+        from datetime import datetime, timezone
+        from conductor_sdk.resources.reservations.queries import ReservationQuerier
+        from ats_models.pydantic.conductor_query import DateLookup
+        at = at or datetime.now(timezone.utc)
+        res = ReservationQuerier().lookup_advanced(
+            entity=[str(node_id)],
+            date_start=[DateLookup(value=at, operation="lte")],
+            date_end=[DateLookup(value=at, operation="gt")],
+            page_size=25)
+        page = res.next()
+        out = []
+        for r in (getattr(page, "data", None) or []):
+            d = r.model_dump()
+            out.append({
+                "title": d.get("title"),
+                "date_end": str(d.get("date_end")),
+                "users": [(u.get("email") if isinstance(u, dict) else None)
+                          for u in (d.get("users") or [])],
+            })
+        return out
+
     def add_users_to_reservation(self, reservation_id: str, user_ids: list[str]) -> None:
         """Add users to an existing reservation (mode='add' — never removes anyone)."""
         from uuid import UUID
