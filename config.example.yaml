@@ -45,5 +45,17 @@ policy:
   default_duration_hours: 24
   default_horizon_days: 14
 
-# Username for the printed `ssh ... rocm-smi` command in `cli.py status`.
+# Username for the SSH health probe and the printed `ssh ... rocm-smi` command.
 ssh_user: "<your-ntid>"
+
+# Live SSH health probe. A node is only reserved when we can actually use it:
+#   1. key-only login succeeds (a node that prompts for a password counts as unhealthy),
+#   2. rocm-smi is installed and reports >= policy.min_gpus GPUs,
+#   3. docker is installed and `docker ps` succeeds.
+# Read-only — it runs three lookups and changes nothing on the node.
+health_probe:
+  enabled: true
+  user: null                    # null = use ssh_user above
+  key: "~/.ssh/<your-key>"      # private key to authenticate with (null = ssh's default)
+  timeout_s: 30                 # per-node budget; a slow node counts as unreachable
+  workers: 16                   # nodes probed in parallel

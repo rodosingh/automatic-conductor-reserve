@@ -41,12 +41,14 @@ cp config.example.yaml config.yaml     # then edit: team_name, users, pool ids, 
 ### Command line
 ```bash
 python cli.py whoami                 # verify auth + list your teams
-python cli.py status                 # which nodes are free & healthy (read-only report)
+python cli.py status                 # which nodes are free & healthy + why the rest are not
 python cli.py status --free          # only free & healthy + copy-paste rocm-smi / reserve cmds
+python cli.py status --unhealthy     # only unhealthy nodes, with the reason each one failed
 python cli.py status --reserved      # only nodes YOU have reserved (ongoing + upcoming)
 python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
 python cli.py run --commit           # create the reservations (asks for a typed 'yes')
 python cli.py run --commit --node N  # reserve a single node picked from `status`
+python cli.py cancel-unhealthy       # cancel our reservations on nodes failing the health probe
 python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
 python cli.py sync-users             # add config's default users to existing reservations
 python cli.py runs                   # list past run summaries
@@ -54,8 +56,23 @@ python cli.py runs                   # list past run summaries
 
 Shared flags on `plan` / `run` (and where noted): `--pool <id>` (repeatable, restrict pools),
 `--node <name>` (repeatable, restrict to specific nodes — short name or full hostname),
-`--yes` (skip the confirm prompt), `-v` (live progress). `run`/`cancel-small-gpu`/`sync-users`
-are **dry-run** until you add `--commit`.
+`--no-probe` (skip the SSH health probe), `--yes` (skip the confirm prompt), `-v` (live
+progress). `run`/`cancel-unhealthy`/`cancel-small-gpu`/`sync-users` are **dry-run** until
+you add `--commit`.
+
+### Node health
+
+A node is **healthy** only if, over your own SSH key, all of these hold:
+
+1. it accepts a **key-only login** — a node that prompts for a password counts as unhealthy,
+2. **`rocm-smi`** is installed and reports at least `policy.min_gpus` GPUs,
+3. **`docker`** is installed and **`docker ps`** succeeds.
+
+Only healthy nodes get reserved. The probe is read-only (three shell lookups, nothing is
+changed on the node), runs in parallel, and retries once so a transient blip doesn't
+condemn a good node. `status` prints the failure reason per node; `cancel-unhealthy`
+releases reservations we already hold on nodes that now fail. Configure it under
+`health_probe` in `config.yaml`; disable per-command with `--no-probe`.
 
 ### Web control app
 ```bash
@@ -63,10 +80,15 @@ python app.py                 # http://127.0.0.1:5057
 ```
 - **Dry-run plan** / **Reserve for real** — plan table, then create (confirm box) with a live
   per-node created/failed table + run history.
+- **Node health card** — runs the SSH probe and lists every **unhealthy node with its reason**,
+  plus a full table of all nodes. Mirrors `cli.py status`.
+- **Cancel unhealthy card** — find/cancel our reservations on nodes failing the probe.
 - **Cancel card** — find/cancel our reservations on sub-`min_gpus` nodes.
 - **Sync-users card** — add the config's default users to existing reservations.
-- **My reservations card** — nodes you have reserved (ongoing + upcoming), mirrors `status --reserved`.
-- Node-eligibility table shows each node's GPU count + include/exclude reason.
+- **My reservations card** — nodes you have reserved (ongoing + upcoming), with each one's
+  health, mirrors `status --reserved`.
+- Node-eligibility table shows each node's GPU count + include/exclude reason (probe failures
+  included).
 
 Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 
@@ -88,14 +110,19 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `policy.min_reservation_minutes` | skip free gaps shorter than this |
 | `policy.start_lead_minutes` | never start earlier than now + this |
 | `policy.min_gpus` | exclude nodes with fewer than this many GPUs |
+| `ssh_user` | username the health probe logs in as (also used in printed `ssh` commands) |
+| `health_probe.enabled` | run the SSH health probe at all (`false` = Conductor's scraped data only) |
+| `health_probe.user` / `key` | login user (defaults to `ssh_user`) and private key to authenticate with |
+| `health_probe.timeout_s` / `workers` | per-node time budget, and how many nodes to probe in parallel |
 | `policy.default_duration_hours` / `default_horizon_days` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
 
 ## How eligibility & scheduling work
 
 - **Eligible pool:** `reservation_strategy == "calendar"`, not archived, `block_api_access`
   false, group restrictions met.
-- **Eligible node:** in an eligible pool, not archived, and with at least `policy.min_gpus`
-  GPUs. (Cosmetic `status` is ignored — the SDK states it must not affect reservations.
+- **Eligible node:** in an eligible pool, not archived, with at least `policy.min_gpus`
+  GPUs, **and passing the live SSH health probe** (key-only login + `rocm-smi` + `docker ps`).
+  (Cosmetic `status` is ignored — the SDK states it must not affect reservations.
   `reservation_only` nodes are included.)
 - **Greedy plan (per node):** tile the node's free time — read from the **actual reservation
   list** — with back-to-back reservations of up to `pool.reservation_duration_limit`, each

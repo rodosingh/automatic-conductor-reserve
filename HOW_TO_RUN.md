@@ -30,34 +30,59 @@ python cli.py cancel-small-gpu --commit   # actually cancel (asks you to type 'y
 python cli.py sync-users                  # dry-run: lists reservations that would be updated
 python cli.py sync-users --commit         # add the default users (mode 'add' — never removes)
 
-# 6) STATUS — which nodes are free & healthy (from Conductor's scraped data; read-only)
-python cli.py status                      # table: gpu det/exp, health, reserved-now/free-for, util
+# 6) STATUS — which nodes are free & healthy, and WHY the rest are not (read-only)
+python cli.py status                      # table: gpu, docker, reserved, health/reason + an "UNHEALTHY" summary
 python cli.py status --free               # only free & healthy nodes + copy-paste rocm-smi cmds
-python cli.py status --reserved           # only nodes YOU have reserved (ongoing + upcoming), with your window + title
+python cli.py status --unhealthy          # only unhealthy nodes, with the reason each one failed
+python cli.py status --reserved           # only nodes YOU have reserved, with health + your window + title
 python cli.py status --fast               # skip the reservation check (health only, quicker)
+python cli.py status --no-probe           # skip the SSH probe (Conductor's scraped data only, instant)
 python cli.py status --pool <id>          # one pool
+
+# 7) CANCEL our reservations on nodes that FAIL the health probe
+python cli.py cancel-unhealthy            # dry-run: lists unhealthy nodes + reasons + what would be cancelled
+python cli.py cancel-unhealthy --commit   # actually cancel (asks you to type 'yes')
 ```
 
 **Reserve a single node from `status`:** pick a free & healthy node and run
 `python cli.py run --commit --node <name>` (the exact line is printed under "Reserve one").
 `--node` matches by short name or full hostname and works with `plan` (dry-run) too.
 
-`status` reports health from Conductor's own SSH-scraped data — reachability, detected-vs-expected
-GPU count, driver/ROCm, `disabled`, and 24h utilization — so it needs no SSH from your machine.
-For each **free & healthy** node it prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'` line
-(user from `--ssh-user` or `ssh_user` in config) so you can eyeball the GPUs live yourself —
-headless SSH to the nodes isn't reliable through the AIG auth gateway, so this is a copy-paste helper,
-not an automated probe.
+### What "healthy" means
 
-### Flags for `run` and `cancel-small-gpu`
+`status`, `plan` and `run` all SSH into each candidate node and check three things. A node is
+healthy only if **all** hold:
+
+1. **key-only login succeeds** — logging in with `ssh_user` + `health_probe.key` without a
+   password. A node that prompts for a password, drops the session, or times out is unhealthy.
+2. **`rocm-smi` is installed and reports ≥ `policy.min_gpus` GPUs** — so a box where the GPUs
+   have fallen off the bus (`0 GPUs`) or ROCm was never installed is unhealthy.
+3. **`docker` is installed and `docker ps` succeeds** — daemon down or no access is unhealthy.
+
+Only healthy nodes are reserved; the reason a node failed is printed next to it in `status`
+(and shown in the Flask **Node health** card). The probe is **read-only** — three shell
+lookups, nothing on the node is changed — runs nodes in parallel (`health_probe.workers`)
+and retries once, so a transient blip doesn't condemn a good node. Conductor's own scraped
+data (reachability, driver, `disabled`, 24h utilization) is still read and shown, but the
+live probe is what decides.
+
+> `ssh: permission denied` usually means your key isn't authorized on that host **from this
+> machine** — the node may be perfectly fine for someone else. It still counts as unhealthy
+> here, because the tool reserves nodes *you* can actually use.
+
+For each free & healthy node `status` also prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'`
+line (user from `--ssh-user` or `ssh_user`) so you can eyeball the GPUs live yourself.
+
+### Flags for `run`, `cancel-unhealthy` and `cancel-small-gpu`
 
 | Flag | Effect |
 |---|---|
 | `--commit` | actually write (create / cancel). Without it, everything is a dry-run. |
 | `--pool <id>` | restrict the run to one pool id (repeatable). Default = all pools in `config.yaml`. |
 | `--node <name>` | restrict to specific node name(s)/hostname(s) (repeatable) — reserve a single node picked from `status`. |
+| `--no-probe` | skip the SSH health probe. Faster, but reserves without verifying login / rocm-smi / docker. |
 | `--yes` | skip the interactive "type yes" prompt (for scripts / non-interactive shells). |
-| `-v` | live progress lines. |
+| `-v` | live progress lines (includes per-node probe results). |
 
 **Per-pool commits** — this is how the pools were actually booked (pool C greedy first, then A/B),
 because the two have different limits and it's safer to verify one before the next:
@@ -82,12 +107,17 @@ python app.py               # open http://127.0.0.1:5057
 - **Dry-run plan** button → full plan table, no writes.
 - Tick **“I understand — reserve for real”** → **Reserve for real** → creates them, shows a
   per-node created/failed table. History + JSONL logs under `runs/`.
+- **Node health card** → **Check node health** runs the SSH probe and shows counts plus a table
+  of every **unhealthy node with its reason** (and a fold-out table of all nodes). Mirrors `status`.
+- **Cancel unhealthy card** → **Find (no delete)** lists the unhealthy nodes with reasons and our
+  reservations on them; tick the box and **Cancel** to release them (mirrors `cancel-unhealthy`).
 - **Cancel card** → **Find (no delete)** lists our reservations on excluded (sub-`min_gpus`)
   nodes; tick the box and **Cancel** to delete them (mirrors `cancel-small-gpu`).
 - **Sync-users card** → **Find (no update)** lists our ongoing+upcoming reservations; tick
   the box and **Add default users** to add the config's default users (mirrors `sync-users`).
 - **My reservations card** → **Show my reservations** lists the nodes YOU have reserved
-  (ongoing + upcoming) with your window, block count, and active/upcoming (mirrors `status --reserved`).
+  (ongoing + upcoming) with your window, block count, active/upcoming, and each node's health
+  (mirrors `status --reserved`).
 - The node-eligibility table shows each node's **GPU count** and why it was included/excluded.
 
 > The web app commits **all** configured pools together (no per-pool button). For per-pool
@@ -102,6 +132,10 @@ python app.py               # open http://127.0.0.1:5057
   drops the single-GPU dev boxes. There are no 2–4 GPU nodes in these pools, so in practice
   it just excludes the 1-GPU machines and keeps the 8-GPU ones. `cancel-small-gpu` cancels
   *our* reservations on those excluded nodes.
+- **Health filter:** every remaining node is SSH-probed and only the healthy ones are
+  reserved (see *What "healthy" means* above). `cancel-unhealthy` releases reservations we
+  already hold on nodes that now fail. It only touches reservations carrying our configured
+  title, so a colleague's reservation on the same node is never cancelled.
 - **How far ahead / how long — set per pool by the server:**
   - Pools **A & B** are hard-capped at **48h**: a reservation's *end* must be within `now+48h`,
     so each node gets **one block ending at the 48h mark** — a full 48h if free now, a shorter
@@ -191,4 +225,8 @@ Then they run exactly as in **Section A** (`plan` first, then `run --commit`).
 | A node fails on commit with “already reserved (overlap)” | The window is already booked (by you or others). Not a bug — expected on busy shared nodes. |
 | A node fails with “exceeds furthest future reservation limit” | You tried to book past the pool's horizon (A/B = 48h). The scheduler caps to it automatically; seeing this means a stale plan — re-run. |
 | A node fails on commit with “access” | Your teams don’t have reservation access to that pool. |
+| Every node reports `ssh: permission denied` | Wrong `ssh_user`, or `health_probe.key` points at a key those hosts don't accept. Check with `ssh -i <key> <user>@<host>` by hand; use `--no-probe` to reserve without the health gate. |
+| A node you can reach shows `ssh: connection timed out` | Not on the internal network/VPN, or the node needs a jump host the probe doesn't use. Raise `health_probe.timeout_s`, or exclude it. |
+| `rocm-smi shows 0 GPUs` | Real fault — the GPUs have fallen off the bus on that node. Correctly treated as unhealthy. |
+| `docker ps failed` | Docker daemon is down, or your user isn't in the `docker` group on that node. |
 | `ModuleNotFoundError: conductor_sdk` | SDK not installed in the Python you’re running — use `~/miniconda3/bin/python`, or run from the project dir / set `PYTHONPATH=~/automatic-conductor-reserve`. |

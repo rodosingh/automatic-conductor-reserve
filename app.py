@@ -16,7 +16,8 @@ from flask import Flask, redirect, render_template, request, url_for
 
 from conductor_reserve import notify
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import run, cancel_small_gpu, sync_users, status_report
+from conductor_reserve.engine import (cancel_small_gpu, cancel_unhealthy, run,
+                                      status_report, sync_users)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
@@ -24,7 +25,7 @@ app = Flask(__name__)
 # Simple in-memory state for the last run + a lock so two clicks don't overlap.
 _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
-         "reserved": None}
+         "reserved": None, "health": None, "unhealthy": None}
 
 
 def _do_run(commit: bool):
@@ -73,6 +74,27 @@ def _do_reserved():
         _last["running"] = False
 
 
+def _do_health():
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        _last["health"] = status_report(cfg, progress=lambda m: _last["log"].append(m))
+    finally:
+        _last["running"] = False
+
+
+def _do_cancel_unhealthy(commit: bool):
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        _last["unhealthy"] = cancel_unhealthy(cfg, commit=commit,
+                                              progress=lambda m: _last["log"].append(m))
+    finally:
+        _last["running"] = False
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -81,6 +103,8 @@ def index():
         cancel=_last["cancel"],
         sync=_last["sync"],
         reserved=_last["reserved"],
+        health=_last["health"],
+        unhealthy=_last["unhealthy"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -124,6 +148,25 @@ def sync_users_route():
     if not _last["running"]:
         with _lock:
             _do_sync(commit=do_commit)
+    return redirect(url_for("index"))
+
+
+@app.route("/status", methods=["POST"])
+def status_route():
+    """Node health report: which nodes are free & healthy, and why the rest failed."""
+    if not _last["running"]:
+        with _lock:
+            _do_health()
+    return redirect(url_for("index"))
+
+
+@app.route("/cancel-unhealthy", methods=["POST"])
+def cancel_unhealthy_route():
+    """List our reservations on probe-failing nodes (dry-run), or cancel them if confirmed."""
+    do_commit = request.form.get("confirm") == "on"
+    if not _last["running"]:
+        with _lock:
+            _do_cancel_unhealthy(commit=do_commit)
     return redirect(url_for("index"))
 
 

@@ -168,6 +168,7 @@ class ConductorClient:
         for s in systems:
             d = s.model_dump()
             name = _dig(d, "system_datas", "name") or _dig(d, "system_datas", "hostname_ip") or str(d.get("id"))
+            hostname = _dig(d, "system_datas", "hostname_ip") or name
             archived = bool(d.get("archived"))
             status = d.get("status")
             status = getattr(status, "value", status)  # EntityStatus enum -> str
@@ -193,6 +194,7 @@ class ConductorClient:
                 gpu_count=gpu,
                 eligible=not reasons,
                 reason="; ".join(reasons),
+                hostname=hostname,
             ))
         return nodes
 

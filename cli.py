@@ -28,6 +28,9 @@ def main(argv=None) -> int:
                         help="restrict to this pool id (repeatable); default = all configured pools")
     common.add_argument("--node", action="append", metavar="NAME",
                         help="restrict to this node name/hostname (repeatable) — e.g. one picked from `status`")
+    common.add_argument("--no-probe", action="store_true",
+                        help="skip the SSH health probe (faster, but reserves without "
+                             "verifying login / rocm-smi / docker)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("plan", parents=[common], help="dry-run: show the plan, create nothing")
     r = sub.add_parser("run", parents=[common],
@@ -40,13 +43,19 @@ def main(argv=None) -> int:
                        help="cancel OUR current+future reservations on nodes below min_gpus")
     c.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
     c.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    cu = sub.add_parser("cancel-unhealthy", parents=[common],
+                        help="cancel OUR reservations on nodes that fail the SSH health probe")
+    cu.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
+    cu.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     su = sub.add_parser("sync-users", parents=[common],
                         help="add config's default users to our existing (ongoing+upcoming) reservations")
     su.add_argument("--commit", action="store_true", help="actually update (default: dry-run)")
     su.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     st = sub.add_parser("status", parents=[common],
-                        help="report which nodes are free and healthy (from Conductor's scraped data)")
+                        help="report which nodes are free & healthy, and why the rest are not")
     st.add_argument("--free", action="store_true", help="show only free & healthy nodes")
+    st.add_argument("--unhealthy", action="store_true",
+                    help="show only unhealthy nodes, with the reason each one failed")
     st.add_argument("--reserved", action="store_true",
                     help="show only currently-reserved nodes, with who holds them and until when")
     st.add_argument("--fast", action="store_true", help="skip the reservation check (health only)")
@@ -76,6 +85,9 @@ def main(argv=None) -> int:
     if args.cmd == "cancel-small-gpu":
         return _cancel_small_gpu(args)
 
+    if args.cmd == "cancel-unhealthy":
+        return _cancel_unhealthy(args)
+
     if args.cmd == "sync-users":
         return _sync_users(args)
 
@@ -97,6 +109,7 @@ def main(argv=None) -> int:
             return 1
 
     result = run(cfg, commit=commit, node_names=getattr(args, "node", None),
+                 probe_health=not args.no_probe,
                  progress=lambda m: print("·", m) if args.verbose else None)
     print()
     print(notify.format_console(result))
@@ -138,8 +151,15 @@ def _cancel_small_gpu(args) -> int:
     return 0
 
 
+def _gpu_cell(r: dict) -> str:
+    """GPUs as rocm-smi actually reports them, falling back to Conductor's numbers."""
+    if r.get("probe_gpus") is not None:
+        return f"{r['probe_gpus']}/{r['gpu_expected']}"
+    return f"{r['gpu_detected']}/{r['gpu_expected']}"
+
+
 def _status(args) -> int:
-    """Report which nodes are free and healthy (Conductor scraped data + live reservations)."""
+    """Report which nodes are free and healthy, and why the unhealthy ones failed."""
     import os
     from conductor_reserve.engine import status_report
     cfg = load_config()
@@ -154,24 +174,37 @@ def _status(args) -> int:
     if args.reserved:
         window_hours = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
     rows = status_report(cfg, check_reservations=not args.fast, window_hours=window_hours,
+                         probe_health=not args.no_probe,
                          progress=lambda m: print("·", m) if args.verbose else None)
-    if args.free:
-        rows = [r for r in rows if r["free_and_healthy"]]
+    unhealthy = [r for r in rows if not r["healthy"]]
 
     if args.reserved:
-        # nodes YOU have reserved (ongoing + upcoming within 48h)
-        rows = [r for r in rows if r["reserved_by_me"]]
-        print(f"{'node':26} {'pool':22} {'gpu':>5} {'your hold (UTC)':29} {'#':>2} {'state':8} title")
-        print("-" * 104)
-        for r in sorted(rows, key=lambda r: (r["mine"][0]["date_start"], r["name"])):
+        # nodes YOU have reserved (ongoing + upcoming)
+        held = [r for r in rows if r["reserved_by_me"]]
+        print(f"{'node':26} {'pool':20} {'gpu':>6} {'health':7} {'your hold (UTC)':29} "
+              f"{'#':>2} {'state':8} title")
+        print("-" * 116)
+        for r in sorted(held, key=lambda r: (r["mine"][0]["date_start"], r["name"])):
             mine = r["mine"]
             start = mine[0]["date_start"][5:16]
             end = max(m["date_end"] for m in mine)[5:16]
             state = "ACTIVE" if any(m["active"] for m in mine) else "upcoming"
-            print(f"{r['name'][:26]:26} {r['pool'][:22]:22} {r['gpu_detected']}/{r['gpu_expected']:<3} "
-                  f"{start+' -> '+end:29} {len(mine):>2} {state:8} {str(mine[0]['title'] or '')[:22]}")
-        print(f"\n{len(rows)} node(s) reserved by you (ongoing + upcoming).")
+            print(f"{r['name'][:26]:26} {r['pool'][:20]:20} {_gpu_cell(r):>6} "
+                  f"{('OK' if r['healthy'] else 'UNHEALTHY'):7} {start+' -> '+end:29} "
+                  f"{len(mine):>2} {state:8} {str(mine[0]['title'] or '')[:22]}")
+        print(f"\n{len(held)} node(s) reserved by you (ongoing + upcoming).")
+        bad_held = [r for r in held if not r["healthy"]]
+        if bad_held:
+            print(f"\n{len(bad_held)} of them are UNHEALTHY:")
+            for r in bad_held:
+                print(f"  {r['name'][:26]:26} {r['health_reason'][:70]}")
+            print("\n  Release them with:  python cli.py cancel-unhealthy --commit")
         return 0
+
+    if args.unhealthy:
+        rows = unhealthy
+    elif args.free:
+        rows = [r for r in rows if r["free_and_healthy"]]
 
     def resv(r):
         if r["reserved_now"] is None:
@@ -181,32 +214,26 @@ def _status(args) -> int:
         fh = r["free_for_h"]
         return "FREE" if fh == float("inf") else f"free {fh:.0f}h"
 
-    print(f"{'node':26} {'pool':22} {'gpu':>7} {'health':8} {'reserved':16} util24h")
-    print("-" * 92)
+    print(f"{'node':26} {'pool':20} {'gpu':>6} {'docker':7} {'reserved':15} health / reason")
+    print("-" * 118)
     healthy_free = []
     for r in sorted(rows, key=lambda r: (not r["free_and_healthy"], r["pool"], r["name"])):
-        gpu = f"{r['gpu_detected']}/{r['gpu_expected']}"
-        health = "OK" if r["healthy"] else "BAD"
-        if not r["healthy"]:
-            bad = []
-            if not r["reachable"]:
-                bad.append(r["reachability"] or "unreachable")
-            elif r["gpu_detected"] != r["gpu_expected"]:
-                bad.append(f"gpu {r['gpu_detected']}/{r['gpu_expected']}")
-            elif (r["gpu_detected"] or 0) < r["min_gpus"]:
-                bad.append(f"{r['gpu_detected']}gpu<min{r['min_gpus']}")
-            if r["disabled"]:
-                bad.append("disabled")
-            if r["archived"]:
-                bad.append("archived")
-            health = "BAD:" + ",".join(bad)[:22]
-        u = r["util_24h"]
-        print(f"{r['name'][:26]:26} {r['pool'][:22]:22} {gpu:>7} {health:8} {resv(r):16} "
-              f"{'' if u is None else str(u)[:6]}")
+        health = "OK" if r["healthy"] else "BAD: " + r["health_reason"]
+        print(f"{r['name'][:26]:26} {r['pool'][:20]:20} {_gpu_cell(r):>6} "
+              f"{str(r.get('probe_docker') or '-'):7} {resv(r):15} {health[:44]}")
         if r["free_and_healthy"]:
             healthy_free.append(r)
 
+    if args.unhealthy:
+        print(f"\n{len(rows)} unhealthy node(s) — these are skipped by `plan` / `run`.")
+        print("Cancel our reservations on them:  python cli.py cancel-unhealthy --commit")
+        return 0
+
     print(f"\n{len(healthy_free)} free & healthy node(s).")
+    if unhealthy and not args.free:
+        print(f"\n{len(unhealthy)} UNHEALTHY node(s) — excluded from reservation:")
+        for r in sorted(unhealthy, key=lambda r: (r["pool"], r["name"])):
+            print(f"  {r['name'][:26]:26} {r['health_reason'][:76]}")
     if healthy_free:
         print("\nCheck GPUs live (copy-paste):")
         for r in healthy_free[:20]:
@@ -214,6 +241,42 @@ def _status(args) -> int:
         print("\nReserve one (copy-paste):")
         for r in healthy_free[:20]:
             print(f"  python cli.py run --commit --node {r['name']}")
+    return 0
+
+
+def _cancel_unhealthy(args) -> int:
+    """Find and (with --commit) cancel our reservations on nodes failing the health probe."""
+    from conductor_reserve.engine import cancel_unhealthy
+    cfg = load_config()
+    if getattr(args, "pool", None):
+        cfg = _filter_pools(cfg, args.pool)
+    # First pass: probe + find only (no writes) so we can show and confirm.
+    res = cancel_unhealthy(cfg, commit=False,
+                           progress=lambda m: print("·", m) if args.verbose else None)
+    nodes, found = res["unhealthy_nodes"], res["found"]
+    print(f"healthy nodes: {res['healthy']} | unhealthy nodes: {len(nodes)}")
+    if nodes:
+        print("\nunhealthy (reason):")
+        for n in sorted(nodes, key=lambda n: n["name"]):
+            print(f"  {n['name'][:26]:26} {n['reason'][:76]}")
+    if not found:
+        print(f"\nno reservations titled {res['title']!r} on those nodes — nothing to cancel.")
+        return 0
+    print(f"\nour reservations on unhealthy nodes ({len(found)}):")
+    for r in found:
+        print(f"  {r['node_name'][:26]:26} {r['date_start'][:16]} -> {r['date_end'][:16]} "
+              f"| {r['title']} | {r['id']}")
+    if not args.commit:
+        print("\n(dry-run) re-run with --commit to cancel these.")
+        return 0
+    if not args.yes and input(
+            f"\nCancel these {len(found)} reservation(s)? Type 'yes': ").strip().lower() != "yes":
+        print("aborted.")
+        return 1
+    # Cancel exactly the ids listed above — don't re-probe (the verdict could shift).
+    from conductor_reserve.engine import cancel_ids
+    cancelled = cancel_ids([r["id"] for r in found])
+    print(f"cancelled {len(cancelled)}/{len(found)} reservation(s)")
     return 0
 
 
