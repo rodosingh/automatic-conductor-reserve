@@ -8,7 +8,7 @@ fresh. Dry-run is always the default; nothing is created until you explicitly co
 ## A. Quick run (this machine — already configured)
 
 ```bash
-cd ~/hyperloom-reserve
+cd ~/automatic-conductor-reserve
 
 # 1) verify auth works and see your teams
 python cli.py whoami
@@ -115,8 +115,8 @@ depends on **their** team/pool access. So:
 ```bash
 # 1) Get the code (copy the folder, or clone it if you put it in git — WITHOUT .env)
 cd ~
-#   e.g. scp -r you@host:~/hyperloom-reserve ~/hyperloom-reserve   (or a git clone)
-cd hyperloom-reserve
+#   e.g. scp -r you@host:~/automatic-conductor-reserve ~/automatic-conductor-reserve   (or a git clone)
+cd automatic-conductor-reserve
 
 # 2) Install the SDK + web deps into their Python (base conda recommended)
 pip install conductor_sdk flask pyyaml \
@@ -168,4 +168,4 @@ Then they run exactly as in **Section A** (`plan` first, then `run --commit`).
 | A node fails on commit with “already reserved (overlap)” | The window is already booked (by you or others). Not a bug — expected on busy shared nodes. |
 | A node fails with “exceeds furthest future reservation limit” | You tried to book past the pool's horizon (A/B = 48h). The scheduler caps to it automatically; seeing this means a stale plan — re-run. |
 | A node fails on commit with “access” | Your teams don’t have reservation access to that pool. |
-| `ModuleNotFoundError: conductor_sdk` | SDK not installed in the Python you’re running — use `~/miniconda3/bin/python`, or run from the project dir / set `PYTHONPATH=~/hyperloom-reserve`. |
+| `ModuleNotFoundError: conductor_sdk` | SDK not installed in the Python you’re running — use `~/miniconda3/bin/python`, or run from the project dir / set `PYTHONPATH=~/automatic-conductor-reserve`. |
