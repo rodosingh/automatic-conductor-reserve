@@ -229,14 +229,18 @@ def _status(args) -> int:
 
     def _by_class(rows_):
         """Group unhealthy rows by why they failed — the classes mean different things."""
-        from conductor_reserve.probe import CLASS_ACCESS, CLASS_BROKEN, CLASS_UNREACHABLE
+        from conductor_reserve.probe import (CLASS_ACCESS, CLASS_BROKEN, CLASS_EXCLUDED,
+                                             CLASS_UNCHECKED, CLASS_UNREACHABLE)
         blurb = {
             CLASS_BROKEN: "logged in, machine unusable — NOT reserved, safe to release",
             CLASS_UNREACHABLE: "nothing answered — NOT reserved, safe to release",
+            CLASS_EXCLUDED: "below the GPU minimum — never probed; see `cancel-small-gpu`",
+            CLASS_UNCHECKED: "probe skipped (--no-probe) — verdict is Conductor's scraped data",
             CLASS_ACCESS: ("could not log in — health UNVERIFIED, not a fault. "
                            "Still reserved, still kept"),
         }
-        for cls in (CLASS_BROKEN, CLASS_UNREACHABLE, CLASS_ACCESS):
+        for cls in (CLASS_BROKEN, CLASS_UNREACHABLE, CLASS_EXCLUDED, CLASS_UNCHECKED,
+                    CLASS_ACCESS):
             group = [r for r in rows_ if r["health_class"] == cls]
             if not group:
                 continue
@@ -247,7 +251,7 @@ def _status(args) -> int:
 
     if args.unhealthy:
         nblocked = sum(1 for r in rows if r.get("blocked"))
-        print(f"\n{len(rows)} node(s) failed the health probe — {nblocked} excluded from "
+        print(f"\n{len(rows)} node(s) not healthy — {nblocked} excluded from "
               f"reservation, {len(rows) - nblocked} unverified but still reserved.")
         _by_class(rows)
         print("\nRelease broken/unreachable ones:  python cli.py cancel-unhealthy --commit")
@@ -257,7 +261,7 @@ def _status(args) -> int:
     print(f"\n{len(healthy_free)} free & healthy node(s).")
     if unhealthy and not args.free:
         blocked = [r for r in unhealthy if r.get("blocked")]
-        print(f"\n{len(unhealthy)} node(s) failed the health probe "
+        print(f"\n{len(unhealthy)} node(s) not healthy "
               f"({len(blocked)} excluded from reservation, "
               f"{len(unhealthy) - len(blocked)} unverified but still reserved):")
         _by_class(unhealthy)

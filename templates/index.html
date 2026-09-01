@@ -137,10 +137,11 @@
       {% set blocked = bad|selectattr('blocked')|list %}
       {% set unverified = bad|rejectattr('blocked')|list %}
       {% if blocked %}
-      <div class="kv" style="margin-top:14px"><b>Excluded from reservation — the machine is at fault</b></div>
+      <div class="kv" style="margin-top:14px"><b>Excluded from reservation</b></div>
       <div class="mut" style="font-size:12px;margin:4px 0 0">
-        <code>broken</code> = we logged in and it is unusable · <code>unreachable</code> = nothing answered.
-        <code>cancel-unhealthy</code> releases these.
+        <code>broken</code> = we logged in and it is unusable · <code>unreachable</code> = nothing
+        answered — <code>cancel-unhealthy</code> releases both. <code>excluded</code> = below the GPU
+        minimum, never probed — see <code>cancel-small-gpu</code>.
       </div>
       <table style="margin-top:8px">
         <thead><tr><th>Node</th><th>Pool</th><th>GPUs</th><th>Docker</th><th>Class</th><th>Reason</th></tr></thead>
