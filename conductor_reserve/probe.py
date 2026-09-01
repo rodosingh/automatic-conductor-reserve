@@ -55,6 +55,11 @@ SSH_OPTS = [
 CLASS_ACCESS = "access"
 CLASS_UNREACHABLE = "unreachable"
 CLASS_BROKEN = "broken"
+# Not probe verdicts at all:
+#   excluded   ruled out by policy (below min_gpus) before we ever ssh'd
+#   unchecked  the probe did not run (--no-probe); verdict is Conductor's scraped data
+CLASS_EXCLUDED = "excluded"
+CLASS_UNCHECKED = "unchecked"
 
 
 def _ssh_failure(stderr: str) -> tuple[str, str]:

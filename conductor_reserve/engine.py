@@ -433,9 +433,10 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
         if do_probe:
             bad = []
             if h["probe_ok"] is None:
-                bad.append(f"{h['gpu_expected']}gpu<min{min_gpus}"
-                           if (h["gpu_expected"] or 0) < min_gpus else "not probed")
-                h["probe_cls"] = probe.CLASS_BROKEN
+                too_few = (h["gpu_expected"] or 0) < min_gpus
+                bad.append(f"{h['gpu_expected']}gpu<min{min_gpus}" if too_few else "not probed")
+                # Never probed — ruled out by policy, so don't label it a probe failure.
+                h["probe_cls"] = probe.CLASS_EXCLUDED if too_few else probe.CLASS_UNREACHABLE
             elif not h["probe_ok"]:
                 bad.append(h["probe_reason"])
             if h["disabled"]:
@@ -448,9 +449,16 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
         else:
             h["healthy"] = h["reachable"] and h["gpu_ok"] and not h["disabled"] and not h["archived"]
             h["health_reason"] = "" if h["healthy"] else _conductor_health_reason(h, min_gpus)
-            h["health_class"] = "" if h["healthy"] else probe.CLASS_BROKEN
-        # Excluded from reservation? Only machine-attributable failures count.
-        h["blocked"] = h["health_class"] in block_classes
+            # No probe ran, so don't claim a probe verdict: only the GPU-count rule is ours.
+            if h["healthy"]:
+                h["health_class"] = ""
+            elif (h["gpu_expected"] or 0) < min_gpus:
+                h["health_class"] = probe.CLASS_EXCLUDED
+            else:
+                h["health_class"] = probe.CLASS_UNCHECKED
+        # Excluded from reservation? Machine-attributable failures, plus policy exclusions.
+        h["blocked"] = (h["health_class"] in block_classes
+                        or h["health_class"] == probe.CLASS_EXCLUDED)
 
         h["reserved_now"] = None
         h["free_for_h"] = None
