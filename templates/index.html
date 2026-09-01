@@ -134,18 +134,45 @@
         <div><div class="stat {{ 'bad' if bad else '' }}">{{ bad|length }}</div><div class="mut">unhealthy</div></div>
       </div>
       {% if bad %}
-      <div class="kv" style="margin-top:14px"><b>Unhealthy nodes — excluded from reservation</b></div>
+      {% set blocked = bad|selectattr('blocked')|list %}
+      {% set unverified = bad|rejectattr('blocked')|list %}
+      {% if blocked %}
+      <div class="kv" style="margin-top:14px"><b>Excluded from reservation — the machine is at fault</b></div>
+      <div class="mut" style="font-size:12px;margin:4px 0 0">
+        <code>broken</code> = we logged in and it is unusable · <code>unreachable</code> = nothing answered.
+        <code>cancel-unhealthy</code> releases these.
+      </div>
       <table style="margin-top:8px">
-        <thead><tr><th>Node</th><th>Pool</th><th>GPUs</th><th>Docker</th><th>Reason</th></tr></thead>
+        <thead><tr><th>Node</th><th>Pool</th><th>GPUs</th><th>Docker</th><th>Class</th><th>Reason</th></tr></thead>
         <tbody>
-        {% for r in bad|sort(attribute='name') %}
+        {% for r in blocked|sort(attribute='name') %}
           <tr><td>{{ r.name }}</td><td class="mut">{{ r.pool }}</td>
               <td class="mut">{{ r.probe_gpus if r.probe_gpus is not none else '—' }}/{{ r.gpu_expected }}</td>
               <td class="mut">{{ r.probe_docker or '—' }}</td>
+              <td class="mut">{{ r.health_class }}</td>
               <td><span class="pill failed">{{ r.health_reason }}</span></td></tr>
         {% endfor %}
         </tbody>
       </table>
+      {% endif %}
+      {% if unverified %}
+      <div class="kv" style="margin-top:16px"><b>Health unverified — we could not log in</b></div>
+      <div class="mut" style="font-size:12px;margin:4px 0 0">
+        Not a fault: this says our key was refused, not that the node is bad. These are
+        <b>still reserved and still kept</b> — blocking on them would mean never reserving
+        the node again, and so never regaining the access needed to check it.
+      </div>
+      <table style="margin-top:8px">
+        <thead><tr><th>Node</th><th>Pool</th><th>Held now</th><th>Reason</th></tr></thead>
+        <tbody>
+        {% for r in unverified|sort(attribute='name') %}
+          <tr><td>{{ r.name }}</td><td class="mut">{{ r.pool }}</td>
+              <td class="mut">{{ 'yes' if r.held_now else 'no' }}</td>
+              <td class="mut">{{ r.health_reason }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
       {% endif %}
       <details style="margin-top:14px">
         <summary class="mut">All {{ health|length }} nodes</summary>
@@ -169,32 +196,52 @@
   <div class="card">
     <div class="kv"><b>Cancel our reservations on unhealthy nodes</b></div>
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
-      Probes every node and finds reservations titled "{{ config.title }}" on the ones that fail —
-      unreachable, password-only login, no working <code>rocm-smi</code>, or no working Docker.
-      Scoped to our own title, so a colleague's reservation on the same node is never touched.
+      Probes every node and finds reservations titled "{{ config.title }}" on the ones the probe
+      blames on <b>the machine</b> — <code>broken</code> (we logged in, no/too few GPUs or Docker
+      dead) or <code>unreachable</code> (nothing answered). Nodes we merely could not log into are
+      <b>kept</b> unless you tick "include no-access". Scoped to our own title, so a colleague's
+      reservation on the same node is never touched.
     </div>
     <div class="row">
       <form action="{{ url_for('cancel_unhealthy_route') }}" method="post">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="include_access"> include no-access nodes</label>
         <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find (no delete)</button>
       </form>
       <form action="{{ url_for('cancel_unhealthy_route') }}" method="post" onsubmit="return confirm('Permanently cancel our reservations on the unhealthy nodes?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="include_access"> include no-access</label>
         <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — cancel them</label>
         <button class="btn btn-commit" {% if running %}disabled{% endif %}>🗑 Cancel</button>
       </form>
     </div>
     {% if unhealthy %}
       <div style="margin-top:12px">
-        <div class="kv"><b>{{ unhealthy.unhealthy_nodes|length }} unhealthy node(s) · {{ unhealthy.healthy }} healthy · {{ unhealthy.found|length }} of our reservation(s) on them{% if unhealthy.committed %} — cancelled {{ unhealthy.cancelled|length }}{% endif %}</b></div>
+        <div class="kv"><b>{{ unhealthy.unhealthy_nodes|length }} node(s) in scope · {{ unhealthy.healthy }} healthy · {{ unhealthy.kept|length }} kept (out of scope) · {{ unhealthy.found|length }} of our reservation(s) on them{% if unhealthy.committed %} — cancelled {{ unhealthy.cancelled|length }}{% endif %}</b></div>
+        <div class="mut" style="font-size:12px;margin-top:4px">classes in scope: {{ unhealthy.classes|join(', ') }}</div>
         {% if unhealthy.unhealthy_nodes %}
         <table style="margin-top:8px">
-          <thead><tr><th>Node</th><th>Pool</th><th>Reason</th></tr></thead>
+          <thead><tr><th>Node</th><th>Pool</th><th>Class</th><th>Reason</th></tr></thead>
           <tbody>
           {% for n in unhealthy.unhealthy_nodes|sort(attribute='name') %}
             <tr><td>{{ n.name }}</td><td class="mut">{{ n.pool }}</td>
+                <td class="mut">{{ n.cls }}</td>
                 <td><span class="pill failed">{{ n.reason }}</span></td></tr>
           {% endfor %}
           </tbody>
         </table>
+        {% endif %}
+        {% if unhealthy.kept %}
+        <details style="margin-top:12px">
+          <summary class="mut">{{ unhealthy.kept|length }} unhealthy but kept — health unverified, reservations left alone</summary>
+          <table style="margin-top:8px">
+            <thead><tr><th>Node</th><th>Pool</th><th>Class</th><th>Reason</th></tr></thead>
+            <tbody>
+            {% for n in unhealthy.kept|sort(attribute='name') %}
+              <tr><td>{{ n.name }}</td><td class="mut">{{ n.pool }}</td>
+                  <td class="mut">{{ n.cls }}</td><td class="mut">{{ n.reason }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </details>
         {% endif %}
         {% if unhealthy.found %}
         <table style="margin-top:12px">

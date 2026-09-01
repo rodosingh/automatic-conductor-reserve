@@ -47,27 +47,42 @@ SSH_OPTS = [
 ]
 
 
-def _ssh_reason(stderr: str) -> str:
-    """Turn ssh's stderr into a short, stable reason string."""
+# Why a node failed, coarsely — because the three classes deserve different treatment:
+#   access      we are not allowed in from here; the node itself may be perfectly fine
+#               (someone with the right key almost certainly can use it)
+#   unreachable nobody can get in from here right now — down, firewalled, or hung
+#   broken      we got in and the box is not usable: no/too few GPUs, no working docker
+CLASS_ACCESS = "access"
+CLASS_UNREACHABLE = "unreachable"
+CLASS_BROKEN = "broken"
+
+
+def _ssh_failure(stderr: str) -> tuple[str, str]:
+    """Turn ssh's stderr into a short, stable (reason, class) pair."""
     err = (stderr or "").strip()
     low = err.lower()
     if "permission denied" in low:
-        return "ssh: permission denied (key rejected / password required)"
+        return "ssh: permission denied (key rejected / password required)", CLASS_ACCESS
     if "timed out" in low or "timeout" in low:
-        return "ssh: connection timed out"
+        return "ssh: connection timed out", CLASS_UNREACHABLE
     if "connection closed" in low or "kex_exchange_identification" in low:
-        return "ssh: connection closed by host"
+        return "ssh: connection closed by host", CLASS_UNREACHABLE
     if "could not resolve" in low or "name or service not known" in low:
-        return "ssh: hostname does not resolve"
+        return "ssh: hostname does not resolve", CLASS_UNREACHABLE
     if "connection refused" in low:
-        return "ssh: connection refused"
+        return "ssh: connection refused", CLASS_UNREACHABLE
     first = next((ln for ln in err.splitlines() if ln.strip()), "")
-    return "ssh: " + (first[:90] if first else "no response")
+    return "ssh: " + (first[:90] if first else "no response"), CLASS_UNREACHABLE
 
 
 def probe_host(host: str, *, user: str, key: str | None = None, min_gpus: int = 2,
                timeout_s: int = 30, retries: int = 1) -> dict:
-    """Probe one host. Returns {ok, reason, gpus, docker, ssh}. Never raises."""
+    """Probe one host. Returns {ok, reason, cls, gpus, docker, ssh}. Never raises.
+
+    `cls` is "" when healthy, else one of access / unreachable / broken — see the class
+    constants above. Callers use it to treat "we can't get in" differently from
+    "the machine is faulty".
+    """
     cmd = ["ssh"]
     if key:
         cmd += ["-i", str(Path(key).expanduser())]
@@ -83,8 +98,8 @@ def probe_host(host: str, *, user: str, key: str | None = None, min_gpus: int = 
         except subprocess.TimeoutExpired:
             out, err = "", "connection timed out"
         except OSError as e:  # ssh binary missing, etc.
-            return {"ok": False, "reason": f"ssh: {e}", "ssh": False,
-                    "gpus": None, "docker": None}
+            return {"ok": False, "reason": f"ssh: {e}", "cls": CLASS_UNREACHABLE,
+                    "ssh": False, "gpus": None, "docker": None}
         if "PROBE_BEGIN" in out:
             break
         # A rejected key is deterministic — don't waste a retry on it.
@@ -94,7 +109,8 @@ def probe_host(host: str, *, user: str, key: str | None = None, min_gpus: int = 
             LOG.debug("probe retry for %s: %s", host, (err or "").strip()[:80])
 
     if "PROBE_BEGIN" not in out:
-        return {"ok": False, "reason": _ssh_reason(err), "ssh": False,
+        reason, cls = _ssh_failure(err)
+        return {"ok": False, "reason": reason, "cls": cls, "ssh": False,
                 "gpus": None, "docker": None}
 
     fields = dict(ln.split("=", 1) for ln in out.splitlines() if "=" in ln)
@@ -113,7 +129,9 @@ def probe_host(host: str, *, user: str, key: str | None = None, min_gpus: int = 
     elif docker != "ok":
         reasons.append("docker ps failed (daemon down or no access)")
 
-    return {"ok": not reasons, "reason": "; ".join(reasons), "ssh": True,
+    # We got a shell, so anything wrong from here on is the machine, not our access.
+    return {"ok": not reasons, "reason": "; ".join(reasons),
+            "cls": CLASS_BROKEN if reasons else "", "ssh": True,
             "gpus": gpus, "docker": docker}
 
 

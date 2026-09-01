@@ -59,3 +59,10 @@ health_probe:
   key: "~/.ssh/<your-key>"      # private key to authenticate with (null = ssh's default)
   timeout_s: 30                 # per-node budget; a slow node counts as unreachable
   workers: 16                   # nodes probed in parallel
+  # Which probe failures actually disqualify a node from being reserved:
+  #   broken       we logged in and the box is unusable (no/too few GPUs, docker dead)
+  #   unreachable  nothing answered — down, hung or firewalled
+  #   access       we could not log in. NOT listed by default: that is a fact about our
+  #                credentials, not the node. Blocking on it is a trap — we would stop
+  #                reserving the node and so never regain the access needed to check it.
+  block_classes: ["broken", "unreachable"]

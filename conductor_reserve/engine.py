@@ -68,13 +68,22 @@ def _enumerate_nodes(client: ConductorClient, config: dict, emit):
     return pairs, pools, all_nodes, errors
 
 
-def _probe_filter(config: dict, pairs: list, emit) -> tuple[list, list]:
+def _probe_filter(config: dict, pairs: list, emit,
+                  block_classes: Optional[tuple] = None) -> tuple[list, list]:
     """Split (node, pool) pairs by the live SSH health probe.
 
     A node is healthy only if we can log in with our key (no password), `rocm-smi` reports
     at least min_gpus GPUs, and `docker ps` works. Annotates each NodeInfo with
-    probe_ok/probe_reason and marks failures ineligible. Returns (healthy, unhealthy).
+    probe_ok / probe_reason / probe_cls.
+
+    `block_classes` decides which failures actually disqualify a node. Only failures we can
+    attribute to the machine (`broken`, `unreachable`) do by default — an `access` failure
+    means we could not log in, which is NOT evidence the node is bad, and treating it as
+    such is a trap: we would stop reserving the node and so never regain the access needed
+    to check it. Returns (allowed, blocked).
     """
+    if block_classes is None:
+        block_classes = _block_classes(config)
     settings = probe.probe_settings(config)
     if not settings["user"]:
         emit("WARNING: no ssh_user / health_probe.user configured — skipping health probe")
@@ -86,18 +95,24 @@ def _probe_filter(config: dict, pairs: list, emit) -> tuple[list, list]:
         hosts, user=settings["user"], key=settings["key"], min_gpus=min_gpus,
         timeout_s=settings["timeout_s"], workers=settings["workers"], progress=emit)
 
-    healthy, unhealthy = [], []
+    allowed, blocked, unverified = [], [], 0
     for node, pool in pairs:
-        r = results.get(node.hostname or node.name) or {"ok": False, "reason": "not probed"}
+        r = (results.get(node.hostname or node.name)
+             or {"ok": False, "reason": "not probed", "cls": probe.CLASS_UNREACHABLE})
         node.probe_ok, node.probe_reason = bool(r["ok"]), r["reason"]
-        if r["ok"]:
-            healthy.append((node, pool))
+        node.probe_cls = r.get("cls", "")
+        if r["ok"] or node.probe_cls not in block_classes:
+            if not r["ok"]:
+                unverified += 1
+            allowed.append((node, pool))
         else:
             node.eligible = False
             node.reason = "; ".join(x for x in (node.reason, r["reason"]) if x)
-            unhealthy.append((node, pool))
-    emit(f"health probe: {len(healthy)} healthy, {len(unhealthy)} unhealthy")
-    return healthy, unhealthy
+            blocked.append((node, pool))
+    ok = sum(1 for n, _ in allowed if n.probe_ok)
+    emit(f"health probe: {ok} healthy, {blocked and len(blocked) or 0} blocked "
+         f"({', '.join(block_classes)}), {unverified} unverified but kept")
+    return allowed, blocked
 
 
 def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient] = None,
@@ -164,10 +179,12 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
             emit("WARNING: requested nodes not eligible/found: " + ", ".join(missing))
         emit(f"restricted to {len(eligible_nodes)}/{before} eligible node(s) by --node")
 
-    # 1b) only reserve nodes we can actually use (ssh + rocm-smi + docker)
+    # 1b) drop nodes the probe shows are faulty or unreachable. Nodes we merely could not
+    # log into are kept — that is a credentials fact, not a health fact, and skipping them
+    # would mean never reserving them again (and so never being able to verify them).
     if probe_health and probe.probe_settings(config)["enabled"]:
-        eligible_nodes, unhealthy = _probe_filter(config, eligible_nodes, emit)
-        for n, _ in unhealthy:
+        eligible_nodes, blocked = _probe_filter(config, eligible_nodes, emit)
+        for n, _ in blocked:
             emit(f"  skipping {n.name}: {n.probe_reason}")
 
     if max_nodes is not None:
@@ -260,10 +277,26 @@ def cancel_small_gpu(config: dict, *, commit: bool = False,
             "found": found, "cancelled": cancelled, "committed": bool(commit)}
 
 
-def cancel_unhealthy(config: dict, *, commit: bool = False,
+# Which probe failures we attribute to the machine rather than to our own credentials.
+# "access" is deliberately excluded: failing to log in is not evidence a node is faulty —
+# it may need a key we don't have here, or access may be gated on holding the reservation
+# we would be giving up. Used both to decide what NOT to reserve and what to release.
+CANCELLABLE_CLASSES = (probe.CLASS_BROKEN, probe.CLASS_UNREACHABLE)
+
+
+def _block_classes(config: dict) -> tuple:
+    """Probe failure classes that disqualify a node from being reserved."""
+    hp = config.get("health_probe") or {}
+    return tuple(hp.get("block_classes") or CANCELLABLE_CLASSES)
+
+
+def cancel_unhealthy(config: dict, *, commit: bool = False, classes: tuple = CANCELLABLE_CLASSES,
                      client: Optional[ConductorClient] = None, progress=None) -> dict:
-    """Find (and, with commit=True, cancel) our reservations on nodes that fail the SSH
-    health probe — unreachable, no key-only login, no working rocm-smi, or no working docker.
+    """Find (and, with commit=True, cancel) our reservations on nodes failing the SSH probe.
+
+    `classes` selects which failures count: by default only genuinely unusable nodes
+    (`broken` — no/too few GPUs, no working docker; `unreachable` — down or hung). Pass
+    `probe.CLASS_ACCESS` too to also release nodes we simply cannot log into from here.
 
     Scoped to reservations carrying our configured title, i.e. the ones this tool created.
     A colleague's own reservation on the same node is never touched, even if they are one
@@ -277,10 +310,20 @@ def cancel_unhealthy(config: dict, *, commit: bool = False,
     client = client or ConductorClient()
     title = config["reservation"]["title"]
     pairs, _, _, _ = _enumerate_nodes(client, config, emit)
-    healthy, unhealthy = _probe_filter(config, pairs, emit)
+    # Treat every failure class as blocking here so the report can show them all; the
+    # `classes` argument below decides which ones we actually act on.
+    all_classes = (probe.CLASS_ACCESS, probe.CLASS_BROKEN, probe.CLASS_UNREACHABLE)
+    healthy, unhealthy = _probe_filter(config, pairs, emit, block_classes=all_classes)
 
-    nodes = [{"name": n.name, "hostname": n.hostname, "pool": n.pool_name,
-              "id": n.id, "reason": n.probe_reason} for n, _ in unhealthy]
+    skipped = [{"name": n.name, "pool": n.pool_name, "cls": n.probe_cls,
+                "reason": n.probe_reason} for n, _ in unhealthy if n.probe_cls not in classes]
+    if skipped:
+        emit(f"keeping {len(skipped)} unhealthy node(s) outside classes {list(classes)} "
+             f"(e.g. no access from here — the node may be fine for others)")
+    unhealthy = [(n, p) for n, p in unhealthy if n.probe_cls in classes]
+
+    nodes = [{"name": n.name, "hostname": n.hostname, "pool": n.pool_name, "id": n.id,
+              "reason": n.probe_reason, "cls": n.probe_cls} for n, _ in unhealthy]
     by_id = {n["id"]: n for n in nodes}
     found = client.find_our_reservations([n["id"] for n in nodes], set(), {title})
     for r in found:
@@ -289,14 +332,15 @@ def cancel_unhealthy(config: dict, *, commit: bool = False,
         r["node_reason"] = node.get("reason", "")
         r["date_start"] = str(r.get("date_start"))
         r["date_end"] = str(r.get("date_end"))
-    emit(f"{len(unhealthy)} unhealthy node(s); our reservations on them: {len(found)}")
+    emit(f"{len(nodes)} cancellable unhealthy node(s); our reservations on them: {len(found)}")
 
     cancelled: list[str] = []
     if commit and found:
         cancelled = client.cancel_reservations([r["id"] for r in found])
         emit(f"cancelled {len(cancelled)} reservation(s)")
     return {"title": title, "healthy": len(healthy), "unhealthy_nodes": nodes,
-            "found": found, "cancelled": cancelled, "committed": bool(commit)}
+            "kept": skipped, "classes": list(classes), "found": found,
+            "cancelled": cancelled, "committed": bool(commit)}
 
 
 def _conductor_health_reason(h: dict, min_gpus: int) -> str:
@@ -361,12 +405,14 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
                 continue
             h["gpu_ok"] = (h["gpu_detected"] is not None and h["gpu_expected"] is not None
                            and h["gpu_detected"] == h["gpu_expected"] and h["gpu_detected"] >= min_gpus)
-            h.update(probe_ok=None, probe_reason="", probe_gpus=None, probe_docker=None)
+            h.update(probe_ok=None, probe_reason="", probe_gpus=None, probe_docker=None,
+                     probe_cls="")
             rows.append(h)
 
     # Live SSH probe — the authoritative verdict. Skip nodes we'd never reserve anyway
     # (too few GPUs, archived) so we don't spend connections on them.
     settings = probe.probe_settings(config)
+    block_classes = _block_classes(config)
     do_probe = bool(probe_health and settings["enabled"] and settings["user"])
     if do_probe:
         candidates = [h for h in rows
@@ -381,6 +427,7 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
             if r:
                 h["probe_ok"], h["probe_reason"] = bool(r["ok"]), r["reason"]
                 h["probe_gpus"], h["probe_docker"] = r["gpus"], r["docker"]
+                h["probe_cls"] = r.get("cls", "")
 
     for h in rows:
         if do_probe:
@@ -388,6 +435,7 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
             if h["probe_ok"] is None:
                 bad.append(f"{h['gpu_expected']}gpu<min{min_gpus}"
                            if (h["gpu_expected"] or 0) < min_gpus else "not probed")
+                h["probe_cls"] = probe.CLASS_BROKEN
             elif not h["probe_ok"]:
                 bad.append(h["probe_reason"])
             if h["disabled"]:
@@ -396,14 +444,19 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
                 bad.append("archived")
             h["healthy"] = not bad
             h["health_reason"] = "; ".join(bad)
+            h["health_class"] = "" if not bad else (h["probe_cls"] or probe.CLASS_BROKEN)
         else:
             h["healthy"] = h["reachable"] and h["gpu_ok"] and not h["disabled"] and not h["archived"]
             h["health_reason"] = "" if h["healthy"] else _conductor_health_reason(h, min_gpus)
+            h["health_class"] = "" if h["healthy"] else probe.CLASS_BROKEN
+        # Excluded from reservation? Only machine-attributable failures count.
+        h["blocked"] = h["health_class"] in block_classes
 
         h["reserved_now"] = None
         h["free_for_h"] = None
         h["free_at"] = None
         h["reserved_by_me"] = False
+        h["held_now"] = False
         h["mine"] = []
         if check_reservations:
             resv = client.reservations_window(h["id"], now, now + timedelta(hours=window_hours))
@@ -422,6 +475,7 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
             if mine:
                 mine.sort(key=lambda r: r["date_start"])
                 h["reserved_by_me"] = True
+                h["held_now"] = any(r["date_start"] <= now < r["date_end"] for r in mine)
                 h["mine"] = [{"title": r["title"],
                               "date_start": r["date_start"].isoformat(),
                               "date_end": r["date_end"].isoformat(),

@@ -23,6 +23,7 @@ class NodeInfo:
     # Filled by the SSH health probe (None = not probed).
     probe_ok: Optional[bool] = None
     probe_reason: str = ""
+    probe_cls: str = ""  # "" | access | unreachable | broken
 
 
 @dataclass

@@ -39,9 +39,10 @@ python cli.py status --fast               # skip the reservation check (health o
 python cli.py status --no-probe           # skip the SSH probe (Conductor's scraped data only, instant)
 python cli.py status --pool <id>          # one pool
 
-# 7) CANCEL our reservations on nodes that FAIL the health probe
-python cli.py cancel-unhealthy            # dry-run: lists unhealthy nodes + reasons + what would be cancelled
+# 7) CANCEL our reservations on nodes the probe proves are broken/unreachable
+python cli.py cancel-unhealthy            # dry-run: unhealthy nodes + reasons + what would be cancelled
 python cli.py cancel-unhealthy --commit   # actually cancel (asks you to type 'yes')
+python cli.py cancel-unhealthy --include-access --commit   # ALSO release nodes we can't log into
 ```
 
 **Reserve a single node from `status`:** pick a free & healthy node and run
@@ -59,16 +60,31 @@ healthy only if **all** hold:
    have fallen off the bus (`0 GPUs`) or ROCm was never installed is unhealthy.
 3. **`docker` is installed and `docker ps` succeeds** — daemon down or no access is unhealthy.
 
-Only healthy nodes are reserved; the reason a node failed is printed next to it in `status`
-(and shown in the Flask **Node health** card). The probe is **read-only** — three shell
-lookups, nothing on the node is changed — runs nodes in parallel (`health_probe.workers`)
-and retries once, so a transient blip doesn't condemn a good node. Conductor's own scraped
-data (reachability, driver, `disabled`, 24h utilization) is still read and shown, but the
-live probe is what decides.
+The reason a node failed is printed next to it in `status` (and in the Flask **Node health**
+card). The probe is **read-only** — three shell lookups, nothing on the node is changed —
+runs nodes in parallel (`health_probe.workers`) and retries once, so a transient blip
+doesn't condemn a good node. Conductor's own scraped data (reachability, driver, `disabled`,
+24h utilization) is still read and shown, but the live probe is what decides.
 
-> `ssh: permission denied` usually means your key isn't authorized on that host **from this
-> machine** — the node may be perfectly fine for someone else. It still counts as unhealthy
-> here, because the tool reserves nodes *you* can actually use.
+#### Not every failure is the node's fault
+
+A failure is classified, and only some classes disqualify a node:
+
+| Class | Means | Reserved? | `cancel-unhealthy` releases it? |
+|---|---|---|---|
+| `broken` | We **logged in** and the box is unusable — 0/too few GPUs, no `rocm-smi`, dead Docker. | no | yes |
+| `unreachable` | Nothing answered — timeout, connection closed/refused, no route. | no | yes |
+| `access` | We **could not log in** (key rejected / password wanted). | **yes** | only with `--include-access` |
+
+`access` is deliberately not disqualifying. It is a fact about *our credentials*, not about
+the machine — and blocking on it is a trap: the tool would stop reserving the node, so we
+would never regain the access needed to check it. Observed on this fleet: nodes have been
+reachable **without** holding a reservation, and denied **while** holding one, so login
+success is not a proxy for health and must not gate booking.
+
+That gives a self-correcting loop: **reserve broadly → probe while the reservation is
+active → release what the probe proves is broken** (`cancel-unhealthy`). Change which
+classes disqualify a node with `health_probe.block_classes` in `config.yaml`.
 
 For each free & healthy node `status` also prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'`
 line (user from `--ssh-user` or `ssh_user`) so you can eyeball the GPUs live yourself.
@@ -225,7 +241,7 @@ Then they run exactly as in **Section A** (`plan` first, then `run --commit`).
 | A node fails on commit with “already reserved (overlap)” | The window is already booked (by you or others). Not a bug — expected on busy shared nodes. |
 | A node fails with “exceeds furthest future reservation limit” | You tried to book past the pool's horizon (A/B = 48h). The scheduler caps to it automatically; seeing this means a stale plan — re-run. |
 | A node fails on commit with “access” | Your teams don’t have reservation access to that pool. |
-| Every node reports `ssh: permission denied` | Wrong `ssh_user`, or `health_probe.key` points at a key those hosts don't accept. Check with `ssh -i <key> <user>@<host>` by hand; use `--no-probe` to reserve without the health gate. |
+| Lots of nodes report `ssh: permission denied` | Expected on a mixed fleet: your key isn't authorized on those hosts. They are classed `access`, still reserved, and never auto-released. Check one by hand with `ssh -i <key> <user>@<host>`. |
 | A node you can reach shows `ssh: connection timed out` | Not on the internal network/VPN, or the node needs a jump host the probe doesn't use. Raise `health_probe.timeout_s`, or exclude it. |
 | `rocm-smi shows 0 GPUs` | Real fault — the GPUs have fallen off the bus on that node. Correctly treated as unhealthy. |
 | `docker ps failed` | Docker daemon is down, or your user isn't in the `docker` group on that node. |
