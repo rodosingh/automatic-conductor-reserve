@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import probe, scheduler
+from . import denylist, probe, scheduler
 from .conductor import ConductorClient
 from .models import RunResult
 from .notify import write_run_log
@@ -20,6 +20,11 @@ def _norm(hostname: str) -> str:
     """Normalize a node name/hostname for matching: first dot-label, lower-cased.
     So 'node-01.example.internal' and 'node-01' compare equal."""
     return str(hostname).strip().split(".")[0].lower()
+
+
+def _as_utc(dt):
+    """Assume UTC for any naive datetime (Conductor sometimes returns naive)."""
+    return dt.replace(tzinfo=timezone.utc) if getattr(dt, "tzinfo", None) is None else dt
 
 
 def _merge_iv(intervals):
@@ -179,6 +184,22 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
             emit("WARNING: requested nodes not eligible/found: " + ", ".join(missing))
         emit(f"restricted to {len(eligible_nodes)}/{before} eligible node(s) by --node")
 
+    # 1a) durable denylist: nodes we've confirmed broken and released stay out for good,
+    # regardless of what a later probe (or --no-probe) would say. Clear with `cli.py allow`.
+    denied = denylist.load()
+    if denied:
+        kept = []
+        for n, p in eligible_nodes:
+            entry = denied.get(_norm(n.name))
+            if entry:
+                emit(f"  skipping {n.name}: denylisted ({entry.get('reason', 'confirmed broken')})")
+            else:
+                kept.append((n, p))
+        if len(kept) != len(eligible_nodes):
+            emit(f"denylist excluded {len(eligible_nodes) - len(kept)} node(s) "
+                 f"(re-enable with `cli.py allow <node>`)")
+        eligible_nodes = kept
+
     # 1b) drop nodes the probe shows are faulty or unreachable. Nodes we merely could not
     # log into are kept — that is a credentials fact, not a health fact, and skipping them
     # would mean never reserving them again (and so never being able to verify them).
@@ -335,12 +356,73 @@ def cancel_unhealthy(config: dict, *, commit: bool = False, classes: tuple = CAN
     emit(f"{len(nodes)} cancellable unhealthy node(s); our reservations on them: {len(found)}")
 
     cancelled: list[str] = []
+    denylisted: list[str] = []
     if commit and found:
         cancelled = client.cancel_reservations([r["id"] for r in found])
         emit(f"cancelled {len(cancelled)} reservation(s)")
+    if commit:
+        # Confirmed-broken nodes are recorded so run/plan skip them from now on. Only
+        # `broken` (we got a shell and it was unusable) — access/unreachable stay re-probed.
+        denylisted = denylist.add(
+            [{"name": n["name"], "hostname": n["hostname"], "reason": n["reason"],
+              "cls": n["cls"]} for n in nodes if n["cls"] == probe.CLASS_BROKEN])
+        if denylisted:
+            emit(f"denylisted {len(denylisted)} broken node(s): {', '.join(denylisted)}")
     return {"title": title, "healthy": len(healthy), "unhealthy_nodes": nodes,
             "kept": skipped, "classes": list(classes), "found": found,
-            "cancelled": cancelled, "committed": bool(commit)}
+            "cancelled": cancelled, "denylisted": denylisted, "committed": bool(commit)}
+
+
+def verify_held(config: dict, *, client: Optional[ConductorClient] = None,
+                progress=None) -> dict:
+    """Probe only the nodes we hold an ACTIVE reservation on right now.
+
+    Holding an active reservation is the one state where an SSH failure is a real
+    verdict on the node: if we still cannot log in — or we log in and find it unusable —
+    *while it is allocated to us*, the reservation-gating excuse is gone and the node is
+    genuinely bad. Those nodes should be denylisted and released. A node we can't log
+    into but do NOT actively hold is never judged here (that's just `access`, unknown).
+
+    Report-only: the caller performs the writes on exactly this list, so a second live
+    probe can't shift the verdict between what was shown and what is acted on.
+    """
+    def emit(msg: str):
+        LOG.info(msg)
+        if progress:
+            progress(msg)
+
+    client = client or ConductorClient()
+    title = config["reservation"]["title"]
+    now = datetime.now(timezone.utc)
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    node_by_id = {n.id: (n, p) for n, p in pairs}
+
+    found = client.find_our_reservations([n.id for n, _ in pairs], set(), {title})
+    held_ids = {r["node_id"] for r in found
+                if _as_utc(r["date_start"]) <= now < _as_utc(r["date_end"])}
+    held_pairs = [node_by_id[i] for i in held_ids if i in node_by_id]
+    emit(f"{len(held_pairs)} node(s) have an ACTIVE reservation of ours right now")
+    if not held_pairs:
+        return {"held": 0, "healthy_held": 0, "bad_nodes": [], "to_cancel": []}
+
+    # We hold these, so any failure class is a real fault now — probe blocks on all of them.
+    all_classes = (probe.CLASS_ACCESS, probe.CLASS_BROKEN, probe.CLASS_UNREACHABLE)
+    healthy, unhealthy = _probe_filter(config, held_pairs, emit, block_classes=all_classes)
+    bad_nodes = [{"name": n.name, "hostname": n.hostname, "pool": n.pool_name,
+                  "id": n.id, "reason": n.probe_reason, "cls": n.probe_cls}
+                 for n, _ in unhealthy]
+    bad_ids = {n["id"] for n in bad_nodes}
+    name_by_id = {n["id"]: n["name"] for n in bad_nodes}
+    # Release every reservation of ours on a bad node — active AND upcoming: it's denylisted
+    # now, so we don't want the future blocks either.
+    to_cancel = [{"id": r["id"], "node_id": r["node_id"],
+                  "node_name": name_by_id.get(r["node_id"], r["node_id"]),
+                  "date_start": str(r["date_start"]), "date_end": str(r["date_end"])}
+                 for r in found if r["node_id"] in bad_ids]
+    emit(f"{len(bad_nodes)} held node(s) still unhealthy; "
+         f"{len(to_cancel)} reservation(s) to release")
+    return {"held": len(held_pairs), "healthy_held": len(healthy),
+            "bad_nodes": bad_nodes, "to_cancel": to_cancel}
 
 
 def _conductor_health_reason(h: dict, min_gpus: int) -> str:

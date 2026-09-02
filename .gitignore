@@ -1,6 +1,7 @@
 # secrets & local config
 .env
 config.yaml
+denylist.yaml
 
 # run artifacts
 runs/

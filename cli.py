@@ -39,6 +39,19 @@ def main(argv=None) -> int:
     r.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     sub.add_parser("whoami", parents=[common], help="verify authentication and list your teams")
     sub.add_parser("runs", parents=[common], help="list past run summaries")
+    sub.add_parser("denylist", parents=[common],
+                   help="show nodes confirmed broken and skipped by run/plan")
+    al = sub.add_parser("allow", parents=[common],
+                        help="re-enable denylisted node(s) and (with --commit) reserve them to re-test")
+    al.add_argument("nodes", nargs="+", metavar="NODE", help="node name(s) to re-enable")
+    al.add_argument("--commit", action="store_true",
+                    help="also create a fresh reservation on each, so it can be re-tested while active")
+    al.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    v = sub.add_parser("verify", parents=[common],
+                       help="probe nodes you hold an ACTIVE reservation on; denylist + release any still unhealthy")
+    v.add_argument("--commit", action="store_true",
+                   help="actually denylist + release the still-unhealthy held nodes (default: dry-run)")
+    v.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     c = sub.add_parser("cancel-small-gpu", parents=[common],
                        help="cancel OUR current+future reservations on nodes below min_gpus")
     c.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
@@ -84,6 +97,25 @@ def main(argv=None) -> int:
                   f"planned={s.get('planned')} created={s.get('created')} "
                   f"failed={s.get('failed')}  {s.get('file')}")
         return 0
+
+    if args.cmd == "denylist":
+        from conductor_reserve import denylist
+        d = denylist.load()
+        if not d:
+            print("denylist is empty — no nodes are being skipped.")
+            return 0
+        print(f"{len(d)} node(s) denylisted (skipped by run/plan):")
+        for name, info in sorted(d.items()):
+            print(f"  {name:26} [{info.get('cls', ''):7}] {info.get('reason', '')[:50]:50} "
+                  f"since {info.get('added', '')}")
+        print("\nRe-enable one with:  python cli.py allow <node>")
+        return 0
+
+    if args.cmd == "allow":
+        return _allow(args)
+
+    if args.cmd == "verify":
+        return _verify(args)
 
     if args.cmd == "cancel-small-gpu":
         return _cancel_small_gpu(args)
@@ -317,6 +349,88 @@ def _cancel_unhealthy(args) -> int:
     from conductor_reserve.engine import cancel_ids
     cancelled = cancel_ids([r["id"] for r in found])
     print(f"cancelled {len(cancelled)}/{len(found)} reservation(s)")
+    # Record the confirmed-broken ones so future run/plan skip them for good.
+    from conductor_reserve import denylist
+    newly = denylist.add([{"name": n["name"], "hostname": n.get("hostname"),
+                           "reason": n["reason"], "cls": n["cls"]}
+                          for n in nodes if n["cls"] == probe.CLASS_BROKEN])
+    if newly:
+        print(f"denylisted {len(newly)} broken node(s) — run/plan won't reserve them again: "
+              f"{', '.join(newly)}")
+        print("  (undo with:  python cli.py allow <node>)")
+    return 0
+
+
+def _allow(args) -> int:
+    """Re-enable denylisted node(s), and (with --commit) reserve them so they can be re-tested.
+
+    Removing from the denylist is local and reversible, so it happens immediately. The
+    reservation is the real action on shared infra, so it needs --commit (+ typed yes). We
+    reserve with --no-probe on purpose: the point is to *gain* the access needed to test the
+    node, so we must book it regardless of what a probe says while we don't hold it yet.
+    """
+    from conductor_reserve import denylist
+    from conductor_reserve.engine import run
+    for n in args.nodes:
+        print(f"{'removed from denylist' if denylist.remove(n) else 'not on denylist'}: {n}")
+
+    cfg = load_config()
+    if getattr(args, "pool", None):
+        cfg = _filter_pools(cfg, args.pool)
+    commit = bool(args.commit)
+    if commit and not args.yes:
+        print("\n>>> COMMIT MODE: this will create real reservations to re-test these nodes.")
+        if input(">>> Type 'yes' to proceed: ").strip().lower() != "yes":
+            print("aborted (nodes stay removed from the denylist; nothing was reserved).")
+            return 1
+    result = run(cfg, commit=commit, node_names=args.nodes, probe_health=False,
+                 progress=lambda m: print("·", m) if args.verbose else None)
+    print()
+    print(notify.format_console(result))
+    if commit:
+        print("\nReservations kicked off — they go ACTIVE after policy.start_lead_minutes.")
+        print("Once active, re-test with:  python cli.py verify --commit")
+    else:
+        print("\n(dry-run) re-run with --commit to actually reserve & re-test these nodes.")
+    return 0
+
+
+def _verify(args) -> int:
+    """Probe nodes we hold ACTIVE reservations on; denylist + release any still unhealthy."""
+    from conductor_reserve import denylist
+    from conductor_reserve.engine import cancel_ids, verify_held
+    cfg = load_config()
+    if getattr(args, "pool", None):
+        cfg = _filter_pools(cfg, args.pool)
+    res = verify_held(cfg, progress=lambda m: print("·", m) if args.verbose else None)
+    bad, found = res["bad_nodes"], res["to_cancel"]
+    print(f"actively held: {res['held']} | healthy: {res['healthy_held']} "
+          f"| still-unhealthy while held: {len(bad)}")
+    if not bad:
+        print("every node you actively hold is healthy — nothing to denylist or release.")
+        return 0
+    print("\nunhealthy WHILE WE HOLD IT (genuinely bad — will be denylisted + released):")
+    for n in sorted(bad, key=lambda n: n["name"]):
+        print(f"  {n['name'][:26]:26} [{n['cls']:11}] {n['reason'][:60]}")
+    print(f"\nour reservations to release on them ({len(found)}):")
+    for r in sorted(found, key=lambda r: r["node_name"]):
+        print(f"  {r['node_name'][:26]:26} {r['date_start'][:16]} -> {r['date_end'][:16]} | {r['id']}")
+    if not args.commit:
+        print("\n(dry-run) re-run with --commit to denylist + release these.")
+        return 0
+    if not args.yes and input(
+            f"\nDenylist + release these {len(bad)} node(s)? Type 'yes': ").strip().lower() != "yes":
+        print("aborted.")
+        return 1
+    # Act on exactly the ids/nodes shown above — don't re-probe (the live verdict can shift).
+    cancelled = cancel_ids([r["id"] for r in found])
+    print(f"released {len(cancelled)}/{len(found)} reservation(s)")
+    newly = denylist.add([{"name": n["name"], "hostname": n.get("hostname"),
+                           "reason": n["reason"], "cls": n["cls"]} for n in bad])
+    if newly:
+        print(f"denylisted {len(newly)} node(s) — run/plan won't reserve them again: "
+              f"{', '.join(newly)}")
+        print("  (undo with:  python cli.py allow <node>)")
     return 0
 
 
