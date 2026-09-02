@@ -50,6 +50,9 @@ python cli.py run --commit           # create the reservations (asks for a typed
 python cli.py run --commit --node N  # reserve a single node picked from `status`
 python cli.py cancel-unhealthy       # release nodes the probe proves are broken/unreachable
 python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
+python cli.py verify                 # probe nodes you HOLD now; denylist+release any still unhealthy
+python cli.py denylist               # show confirmed-bad nodes that run/plan now skip
+python cli.py allow N                # re-enable a denylisted node (add --commit to also re-reserve it)
 python cli.py sync-users             # add config's default users to existing reservations
 python cli.py runs                   # list past run summaries
 ```
@@ -78,7 +81,7 @@ the failure reason per node. Configure it under `health_probe`; disable with `--
 |---|---|---|---|
 | `broken` | We logged in and the box is unusable (0/too few GPUs, no `rocm-smi`, dead Docker) | no | yes |
 | `unreachable` | Nothing answered — timeout, closed, refused | no | yes |
-| `access` | We could not log in — usually just means *we don't hold the node right now* | **yes** | only with `--include-access` |
+| `access` | We could not log in — usually just means *we don't hold the node right now* | **yes** | only with `--include-access`; but if it fails *while we hold it*, `verify` denylists it |
 
 **SSH access is largely gated on holding an active reservation.** On much of this fleet you
 can only log into a node while one of your reservations on it is active. Measured directly:
@@ -95,6 +98,22 @@ permanently on one ambiguous result.
 Hence the self-correcting loop: **reserve broadly → probe while the reservation is active →
 release only what the probe proves is broken.** To assess one node, reserve it, wait for the
 reservation to go active, then run `status`. Tune with `health_probe.block_classes`.
+
+**Verify the nodes you hold.** `cancel-unhealthy` only ever acts on `broken`/`unreachable`,
+because for a node you don't hold an `access` failure is just "we don't have it right now".
+`cli.py verify` is the complement: it probes **only nodes you hold an active reservation on**,
+where an `access` failure IS decisive — a login refused during our own reservation is a real
+fault. `verify --commit` denylists such a node (any failure class) and releases every
+reservation of ours on it.
+
+**Confirmed-bad nodes are denylisted for good.** A node released by `cancel-unhealthy
+--commit` or `verify --commit` is written to a persistent `denylist.yaml` (gitignored); from
+then on `run`/`plan` skip it unconditionally — before the probe, and even under `--no-probe`
+— so a repeatedly-bad box is never re-reserved. `cancel-unhealthy` records only the `broken`
+class (`access` isn't a fault for an unheld node, an `unreachable` timeout may be transient);
+`verify` records whatever failed *while we held the node*, `access` included. Inspect with
+`cli.py denylist`; re-enable a repaired node with `cli.py allow <node>` (add `--commit` to
+also reserve it so `verify` can re-test it live).
 
 ### Web control app
 ```bash
@@ -146,8 +165,10 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 - **Eligible pool:** `reservation_strategy == "calendar"`, not archived, `block_api_access`
   false, group restrictions met.
 - **Eligible node:** in an eligible pool, not archived, with at least `policy.min_gpus`
-  GPUs, and **not shown by the live SSH probe to be `broken` or `unreachable`** (a node we
-  merely can't log into is still reserved — see the health table above).
+  GPUs, **not on the persistent `denylist.yaml`** (nodes previously confirmed bad and
+  released by `cancel-unhealthy`/`verify`), and **not shown by the live SSH probe to be
+  `broken` or `unreachable`** (a node
+  we merely can't log into is still reserved — see the health table above).
   (Cosmetic `status` is ignored — the SDK states it must not affect reservations.
   `reservation_only` nodes are included.)
 - **Greedy plan (per node):** tile the node's free time — read from the **actual reservation

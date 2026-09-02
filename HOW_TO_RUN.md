@@ -43,6 +43,15 @@ python cli.py status --pool <id>          # one pool
 python cli.py cancel-unhealthy            # dry-run: unhealthy nodes + reasons + what would be cancelled
 python cli.py cancel-unhealthy --commit   # actually cancel (asks you to type 'yes')
 python cli.py cancel-unhealthy --include-access --commit   # ALSO release nodes we can't log into
+
+# 8) VERIFY the nodes you currently HOLD — the only place an SSH failure is a real verdict
+python cli.py verify                      # dry-run: held nodes still unhealthy while we hold them
+python cli.py verify --commit             # denylist + release those (still-broken OR still-no-login)
+
+# 9) DENYLIST — nodes confirmed bad are skipped by run/plan from then on
+python cli.py denylist                    # show the denylisted nodes being skipped
+python cli.py allow <node>                # re-enable a node (just remove it from the denylist)
+python cli.py allow <node> --commit       # re-enable AND reserve it, so `verify` can re-test it live
 ```
 
 **Reserve a single node from `status`:** pick a free & healthy node and run
@@ -74,7 +83,7 @@ A failure is classified, and only some classes disqualify a node:
 |---|---|---|---|
 | `broken` | We **logged in** and the box is unusable — 0/too few GPUs, no `rocm-smi`, dead Docker. | no | yes |
 | `unreachable` | Nothing answered — timeout, connection closed/refused, no route. | no | yes |
-| `access` | We **could not log in** (key rejected / password wanted). Usually just means *we don't hold the node right now*. | **yes** | only with `--include-access` |
+| `access` | We **could not log in** (key rejected / password wanted). Usually just means *we don't hold the node right now*. | **yes** | only with `--include-access` — but if it fails **while we hold it**, `verify` denylists it (see below) |
 
 #### SSH access is largely gated on holding an active reservation
 
@@ -103,6 +112,54 @@ is active → release only what the probe proves is broken** (`cancel-unhealthy`
 one specific node, reserve it first (`run --commit --node <name>`), wait for the reservation
 to become active, then run `status`. Change which classes disqualify a node with
 `health_probe.block_classes` in `config.yaml`.
+
+#### `verify` — judge the nodes you actually hold
+
+`cancel-unhealthy` probes every node and only ever acts on `broken`/`unreachable`, because
+for a node you *don't* hold, an `access` failure is just "we don't have it right now" — not a
+fault. `verify` is the complement: it looks **only at nodes you hold an active reservation on
+right now**, and there an `access` failure is decisive — the reservation-gating excuse is
+gone, so a node that *still* won't let us log in (or logs in and is unusable) is genuinely bad.
+
+```bash
+python cli.py verify            # dry-run: which held nodes are still unhealthy, and why
+python cli.py verify --commit   # denylist those nodes AND release all our reservations on them
+```
+
+A held node is judged bad for **any** failure class — `broken` (logged in, unusable),
+`access` (still no login while we hold it), or `unreachable` (dead while we hold it) — and on
+`--commit` it is denylisted and every reservation of ours on it (active + upcoming) is
+cancelled in one go. Nodes you hold that probe healthy are left exactly as they are.
+
+#### Confirmed-bad nodes are denylisted for good
+
+Both `cancel-unhealthy --commit` and `verify --commit` write the nodes they release to a
+persistent **denylist** (`denylist.yaml`, gitignored — it holds hostnames). From then on
+`run` and `plan` skip those nodes **unconditionally** — before the probe even runs — so a
+repeatedly-bad box is never reserved again, even under `--no-probe`.
+
+What gets recorded is deliberately narrow, so we never permanently ban a node on an ambiguous
+result:
+
+- **`cancel-unhealthy`** records only the **`broken`** class (we logged in and the machine was
+  unusable). It never records `access` — for an unheld node that's just "no login from here".
+- **`verify`** records whatever failed **while we held the node** — including `access`, because
+  a login refused *during our own active reservation* is a real fault, not an access quirk.
+
+`unreachable` timeouts from `cancel-unhealthy` stay re-probed every run rather than banned
+(they're often transient). Manage the list with:
+
+```bash
+python cli.py denylist              # what's currently skipped, with the reason and date
+python cli.py allow <node>          # remove a node from the denylist (e.g. after it's repaired)
+python cli.py allow <node> --commit # remove it AND reserve it, so `verify` can re-test it live
+```
+
+`allow --commit` reserves the node with the probe skipped on purpose: the whole point is to
+regain the access needed to test it, so it must be booked regardless of what a probe says
+while we don't yet hold it. The reservation goes active after `policy.start_lead_minutes`
+(~20 min); once it's active, `verify --commit` re-judges it and re-denylists it if it's still
+bad.
 
 For each free & healthy node `status` also prints an `ssh <user>@<host> 'watch -n 0.2 rocm-smi'`
 line (user from `--ssh-user` or `ssh_user`) so you can eyeball the GPUs live yourself.
