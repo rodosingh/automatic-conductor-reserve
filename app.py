@@ -17,8 +17,8 @@ from flask import Flask, redirect, render_template, request, url_for
 from conductor_reserve import denylist, notify, probe
 from conductor_reserve.config import load_config
 from conductor_reserve.engine import (CANCELLABLE_CLASSES, cancel_ids, cancel_small_gpu,
-                                      cancel_unhealthy, run, status_report, sync_users,
-                                      verify_held)
+                                      cancel_small_window, cancel_unhealthy, run,
+                                      status_report, sync_users, verify_held)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
@@ -27,7 +27,7 @@ app = Flask(__name__)
 _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
          "reserved": None, "health": None, "unhealthy": None, "verify": None,
-         "denylist": None, "allow": None}
+         "denylist": None, "allow": None, "small_window": None}
 
 
 def _do_run(commit: bool, filter_windows: bool = True):
@@ -99,6 +99,17 @@ def _do_cancel_unhealthy(commit: bool, include_access: bool):
         _last["running"] = False
 
 
+def _do_cancel_small_window(commit: bool):
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        _last["small_window"] = cancel_small_window(cfg, commit=commit,
+                                                    progress=lambda m: _last["log"].append(m))
+    finally:
+        _last["running"] = False
+
+
 def _do_verify(commit: bool):
     """Probe the nodes we hold ACTIVE now; with commit, denylist + release the bad ones.
 
@@ -160,6 +171,7 @@ def index():
         verify=_last["verify"],
         denylist=_last["denylist"],
         allow=_last["allow"],
+        small_window=_last["small_window"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -225,6 +237,16 @@ def cancel_unhealthy_route():
     if not _last["running"]:
         with _lock:
             _do_cancel_unhealthy(commit=do_commit, include_access=include_access)
+    return redirect(url_for("index"))
+
+
+@app.route("/cancel-small-window", methods=["POST"])
+def cancel_small_window_route():
+    """List our reservations on fragmented nodes (dry-run), or cancel them if confirmed."""
+    do_commit = request.form.get("confirm") == "on"
+    if not _last["running"]:
+        with _lock:
+            _do_cancel_small_window(commit=do_commit)
     return redirect(url_for("index"))
 
 

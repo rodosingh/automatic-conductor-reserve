@@ -45,6 +45,10 @@ python cli.py cancel-unhealthy            # dry-run: unhealthy nodes + reasons +
 python cli.py cancel-unhealthy --commit   # actually cancel (asks you to type 'yes')
 python cli.py cancel-unhealthy --include-access --commit   # ALSO release nodes we can't log into
 
+# 7b) Release nodes whose hold has become too FRAGMENTED (the cancel-side window filter)
+python cli.py cancel-small-window          # dry-run: fragmented nodes + what would be cancelled
+python cli.py cancel-small-window --commit # actually cancel (asks you to type 'yes'); NOT denylisted
+
 # 8) VERIFY the nodes you currently HOLD — the only place an SSH failure is a real verdict
 python cli.py verify                      # dry-run: held nodes still unhealthy while we hold them
 python cli.py verify --commit             # denylist + release those (still-broken OR still-no-login)

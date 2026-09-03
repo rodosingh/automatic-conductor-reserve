@@ -421,6 +421,67 @@ def cancel_unhealthy(config: dict, *, commit: bool = False, classes: tuple = CAN
             "cancelled": cancelled, "denylisted": denylisted, "committed": bool(commit)}
 
 
+def cancel_small_window(config: dict, *, commit: bool = False,
+                        client: Optional[ConductorClient] = None, progress=None) -> dict:
+    """Find (and, with commit=True, cancel) OUR reservations on FRAGMENTED nodes.
+
+    The cancel-side complement of the run/plan window filter. A node is fragmented when our
+    hold on it gives NO continuous stretch over `policy.min_continuous_hours` AND leaves an
+    inter-block gap of at least `policy.max_gap_hours` — i.e. `_window_quality` returns
+    keep=False. Such a node yields only scattered slivers, so we release every reservation of
+    ours on it. Judged over our EXISTING reservations only (there is no new plan here); a
+    single unbroken block, or one long run, is never fragmented and is kept.
+
+    Scoped to reservations carrying our configured title. A colleague's own reservation is
+    never touched. Fragmentation is transient (it clears when others release nearby blocks),
+    so — unlike a broken node — a fragmented node is NOT denylisted; run may re-book it later.
+    """
+    def emit(msg: str):
+        LOG.info(msg)
+        if progress:
+            progress(msg)
+
+    client = client or ConductorClient()
+    policy = config.get("policy", {})
+    min_cont_s = float(policy.get("min_continuous_hours", 24)) * 3600
+    max_gap_s = float(policy.get("max_gap_hours", 12)) * 3600
+    title = config["reservation"]["title"]
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    node_by_id = {n.id: n for n, _ in pairs}
+
+    all_ours = client.find_our_reservations([n.id for n, _ in pairs], set(), {title})
+    by_node: dict = {}
+    for r in all_ours:
+        by_node.setdefault(str(r["node_id"]), []).append(r)
+
+    fragmented = []
+    found = []
+    for nid, resvs in by_node.items():
+        coverage = [(r["date_start"], r["date_end"]) for r in resvs]
+        keep, longest, gap = _window_quality(coverage, min_cont_s, max_gap_s)
+        if keep:
+            continue
+        node = node_by_id.get(nid)
+        name = node.name if node else nid
+        fragmented.append({"name": name, "hostname": getattr(node, "hostname", None),
+                           "pool": getattr(node, "pool_name", ""), "id": nid,
+                           "longest_h": round(longest / 3600, 1),
+                           "gap_h": round(gap / 3600, 1), "count": len(resvs)})
+        for r in resvs:
+            found.append({"id": r["id"], "node_id": nid, "node_name": name,
+                          "date_start": str(r.get("date_start")),
+                          "date_end": str(r.get("date_end"))})
+    emit(f"{len(fragmented)} fragmented node(s); our reservations on them: {len(found)}")
+
+    cancelled: list[str] = []
+    if commit and found:
+        cancelled = client.cancel_reservations([r["id"] for r in found])
+        emit(f"cancelled {len(cancelled)} reservation(s)")
+    return {"title": title, "min_continuous_hours": min_cont_s / 3600,
+            "max_gap_hours": max_gap_s / 3600, "fragmented": fragmented,
+            "found": found, "cancelled": cancelled, "committed": bool(commit)}
+
+
 def verify_held(config: dict, *, client: Optional[ConductorClient] = None,
                 progress=None) -> dict:
     """Probe only the nodes we hold an ACTIVE reservation on right now.

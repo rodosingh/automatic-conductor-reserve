@@ -271,6 +271,53 @@
   </div>
 
   <div class="card">
+    <div class="kv"><b>Cancel our reservations on fragmented (small-window) nodes</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      The cancel-side complement of the reserve window filter. Finds nodes where our hold gives
+      no continuous run over <code>{{ config.policy.min_continuous_hours or 24 }}h</code> and
+      leaves an inter-block gap of at least <code>{{ config.policy.max_gap_hours or 12 }}h</code>,
+      and (with the box ticked) releases every reservation of ours on them. Fragmentation is
+      transient, so these nodes are <b>not</b> denylisted. Other people's reservations are never touched.
+    </div>
+    <div class="row">
+      <form action="{{ url_for('cancel_small_window_route') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find (no delete)</button>
+      </form>
+      <form action="{{ url_for('cancel_small_window_route') }}" method="post" onsubmit="return confirm('Permanently cancel our reservations on the fragmented nodes?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — cancel them</label>
+        <button class="btn btn-commit" {% if running %}disabled{% endif %}>🗑 Cancel</button>
+      </form>
+    </div>
+    {% if small_window %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ small_window.found|length }} of our reservation(s) on {{ small_window.fragmented|length }} fragmented node(s){% if small_window.committed %} — cancelled {{ small_window.cancelled|length }}{% endif %}</b></div>
+        {% if small_window.fragmented %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Best continuous</th><th>Largest gap</th><th>Resv</th></tr></thead>
+          <tbody>
+          {% for n in small_window.fragmented %}
+            <tr><td>{{ n.name }}</td><td>{{ '%.1f'|format(n.longest_h) }}h</td>
+                <td>{{ '%.1f'|format(n.gap_h) }}h</td><td>{{ n.count }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+        {% if small_window.found %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
+          <tbody>
+          {% for r in small_window.found %}
+            <tr><td>{{ r.node_name }}</td><td>{{ r.date_start[:16] }}</td><td>{{ r.date_end[:16] }}</td>
+                <td>{% if r.id in small_window.cancelled %}<span class="pill created">cancelled</span>{% else %}<span class="pill planned">found</span>{% endif %}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">Nothing of ours to cancel on fragmented nodes.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <div class="kv"><b>Verify the nodes you actively hold</b></div>
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
       Probes <b>only nodes you hold an ACTIVE reservation on right now</b> — the one state where an
