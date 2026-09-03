@@ -45,13 +45,13 @@ python cli.py status                 # which nodes are free & healthy + why the 
 python cli.py status --free          # only free & healthy + copy-paste rocm-smi / reserve cmds
 python cli.py status --unhealthy     # only unhealthy nodes, with the reason each one failed
 python cli.py status --reserved      # only nodes YOU have reserved (ongoing + upcoming)
+python cli.py status --active_n_healthy  # probe nodes you HOLD now; --commit denylists+releases the bad
 python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
 python cli.py run --commit           # create the reservations (asks for a typed 'yes')
 python cli.py run --commit --node N  # reserve a single node picked from `status`
 python cli.py cancel-unhealthy       # release nodes the probe proves are broken/unreachable
 python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
 python cli.py cancel-small-window    # cancel our reservations on fragmented (small-window) nodes
-python cli.py verify                 # probe nodes you HOLD now; denylist+release any still unhealthy
 python cli.py denylist               # show confirmed-bad nodes that run/plan now skip
 python cli.py allow N                # re-enable a denylisted node (add --commit to also re-reserve it)
 python cli.py sync-users             # add config's default users to existing reservations
@@ -104,7 +104,7 @@ the failure reason per node. Configure it under `health_probe`; disable with `--
 |---|---|---|---|
 | `broken` | We logged in and the box is unusable (0/too few GPUs, no `rocm-smi`, dead Docker) | no | yes |
 | `unreachable` | Nothing answered — timeout, closed, refused | no | yes |
-| `access` | We could not log in — usually just means *we don't hold the node right now* | **yes** | only with `--include-access`; but if it fails *while we hold it*, `verify` denylists it |
+| `access` | We could not log in — usually just means *we don't hold the node right now* | **yes** | never (not a fault for an unheld node); but if it fails *while we hold it*, `status --active_n_healthy` denylists it |
 
 **SSH access is largely gated on holding an active reservation.** On much of this fleet you
 can only log into a node while one of your reservations on it is active. Measured directly:
@@ -122,21 +122,22 @@ Hence the self-correcting loop: **reserve broadly → probe while the reservatio
 release only what the probe proves is broken.** To assess one node, reserve it, wait for the
 reservation to go active, then run `status`. Tune with `health_probe.block_classes`.
 
-**Verify the nodes you hold.** `cancel-unhealthy` only ever acts on `broken`/`unreachable`,
-because for a node you don't hold an `access` failure is just "we don't have it right now".
-`cli.py verify` is the complement: it probes **only nodes you hold an active reservation on**,
-where an `access` failure IS decisive — a login refused during our own reservation is a real
-fault. `verify --commit` denylists such a node (any failure class) and releases every
-reservation of ours on it.
+**Judge the nodes you hold.** `cancel-unhealthy` only ever acts on `broken`/`unreachable`,
+because for a node you don't hold an `access` failure is just "we don't have it right now" —
+you can't SSH in precisely *because* the reservation isn't active, so it is never treated as a
+fault here. `cli.py status --active_n_healthy` is the complement: it probes **only nodes you
+hold an active reservation on**, where an `access` failure IS decisive — a login refused during
+our own reservation is a real fault. `status --active_n_healthy --commit` denylists such a node
+(any failure class) and releases every reservation of ours on it.
 
 **Confirmed-bad nodes are denylisted for good.** A node released by `cancel-unhealthy
---commit` or `verify --commit` is written to a persistent `denylist.yaml` (gitignored); from
-then on `run`/`plan` skip it unconditionally — before the probe, and even under `--no-probe`
-— so a repeatedly-bad box is never re-reserved. `cancel-unhealthy` records only the `broken`
-class (`access` isn't a fault for an unheld node, an `unreachable` timeout may be transient);
-`verify` records whatever failed *while we held the node*, `access` included. Inspect with
-`cli.py denylist`; re-enable a repaired node with `cli.py allow <node>` (add `--commit` to
-also reserve it so `verify` can re-test it live).
+--commit` or `status --active_n_healthy --commit` is written to a persistent `denylist.yaml`
+(gitignored); from then on `run`/`plan` skip it unconditionally — before the probe, and even
+under `--no-probe` — so a repeatedly-bad box is never re-reserved. `cancel-unhealthy` records
+only the `broken` class (`access` isn't a fault for an unheld node, an `unreachable` timeout
+may be transient); `status --active_n_healthy` records whatever failed *while we held the node*,
+`access` included. Inspect with `cli.py denylist`; re-enable a repaired node with `cli.py allow
+<node>` (add `--commit` to also reserve it so `status --active_n_healthy` can re-test it live).
 
 ### Web control app
 ```bash
@@ -147,11 +148,13 @@ python app.py                 # http://127.0.0.1:5057
 - **Node health card** — runs the SSH probe and lists every **unhealthy node with its reason**,
   plus a full table of all nodes. Mirrors `cli.py status`.
 - **Cancel unhealthy card** — find/cancel our reservations on nodes the probe blames on the
-  machine; nodes we merely can't log into are listed separately and kept (tick *include
-  no-access* to release those too).
+  machine (`broken`/`unreachable`); nodes we merely can't log into are listed separately and
+  kept — judge those with the Active & healthy card.
 - **Cancel card** — find/cancel our reservations on sub-`min_gpus` nodes.
 - **Cancel small-window card** — find/cancel our reservations on fragmented nodes (same
   window test as the reserve filter); these nodes are not denylisted.
+- **Active & healthy card** — probe only nodes you hold active now; confirm to denylist +
+  release the still-unhealthy ones. Mirrors `status --active_n_healthy`.
 - **Sync-users card** — add the config's default users to existing reservations.
 - **My reservations card** — nodes you have reserved (ongoing + upcoming), with each one's
   health, mirrors `status --reserved`.
@@ -193,7 +196,7 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
   false, group restrictions met.
 - **Eligible node:** in an eligible pool, not archived, with at least `policy.min_gpus`
   GPUs, **not on the persistent `denylist.yaml`** (nodes previously confirmed bad and
-  released by `cancel-unhealthy`/`verify`), and **not shown by the live SSH probe to be
+  released by `cancel-unhealthy`/`status --active_n_healthy`), and **not shown by the live SSH probe to be
   `broken` or `unreachable`** (a node
   we merely can't log into is still reserved — see the health table above).
   (Cosmetic `status` is ignored — the SDK states it must not affect reservations.

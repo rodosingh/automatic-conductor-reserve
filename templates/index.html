@@ -207,16 +207,15 @@
       Probes every node and finds reservations titled "{{ config.title }}" on the ones the probe
       blames on <b>the machine</b> — <code>broken</code> (we logged in, no/too few GPUs or Docker
       dead) or <code>unreachable</code> (nothing answered). Nodes we merely could not log into are
-      <b>kept</b> unless you tick "include no-access". Scoped to our own title, so a colleague's
-      reservation on the same node is never touched.
+      <b>kept</b> — a can't-log-in failure isn't decisive unless we hold the node active, so judge
+      those with the <b>Active &amp; healthy</b> card below. Scoped to our own title, so a
+      colleague's reservation on the same node is never touched.
     </div>
     <div class="row">
       <form action="{{ url_for('cancel_unhealthy_route') }}" method="post">
-        <label class="mut" style="font-size:13px"><input type="checkbox" name="include_access"> include no-access nodes</label>
         <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find (no delete)</button>
       </form>
       <form action="{{ url_for('cancel_unhealthy_route') }}" method="post" onsubmit="return confirm('Permanently cancel our reservations on the unhealthy nodes?');">
-        <label class="mut" style="font-size:13px"><input type="checkbox" name="include_access"> include no-access</label>
         <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — cancel them</label>
         <button class="btn btn-commit" {% if running %}disabled{% endif %}>🗑 Cancel</button>
       </form>
@@ -318,44 +317,44 @@
   </div>
 
   <div class="card">
-    <div class="kv"><b>Verify the nodes you actively hold</b></div>
+    <div class="kv"><b>Active &amp; healthy — judge the nodes you actively hold</b></div>
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
       Probes <b>only nodes you hold an ACTIVE reservation on right now</b> — the one state where an
       SSH failure is a real verdict (the reservation-gating excuse is gone). Any failing node
       (including <code>access</code> — a login refused <i>while we hold it</i>) is genuinely bad;
       with the box ticked it's written to the persistent denylist and <b>all</b> our reservations
-      on it (active + upcoming) are released. Mirrors <code>python cli.py verify</code>.
+      on it (active + upcoming) are released. Mirrors <code>python cli.py status --active_n_healthy</code>.
     </div>
     <div class="row">
-      <form action="{{ url_for('verify_route') }}" method="post">
-        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🩺 Verify held (no writes)</button>
+      <form action="{{ url_for('active_n_healthy_route') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🩺 Check held (no writes)</button>
       </form>
-      <form action="{{ url_for('verify_route') }}" method="post" onsubmit="return confirm('Denylist + release the still-unhealthy nodes you actively hold?');">
+      <form action="{{ url_for('active_n_healthy_route') }}" method="post" onsubmit="return confirm('Denylist + release the still-unhealthy nodes you actively hold?');">
         <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — denylist &amp; release</label>
         <button class="btn btn-commit" {% if running %}disabled{% endif %}>🚫 Denylist &amp; release</button>
       </form>
     </div>
-    {% if verify %}
+    {% if active_n_healthy %}
       <div style="margin-top:12px">
-        <div class="kv"><b>{{ verify.held }} node(s) held ACTIVE now · {{ verify.healthy_held }} healthy · {{ verify.bad_nodes|length }} still unhealthy while held{% if verify.committed %} — released {{ verify.cancelled|length }} reservation(s), denylisted {{ verify.denylisted|length }}{% endif %}</b></div>
-        {% if verify.bad_nodes %}
+        <div class="kv"><b>{{ active_n_healthy.held }} node(s) held ACTIVE now · {{ active_n_healthy.healthy_held }} healthy · {{ active_n_healthy.bad_nodes|length }} still unhealthy while held{% if active_n_healthy.committed %} — released {{ active_n_healthy.cancelled|length }} reservation(s), denylisted {{ active_n_healthy.denylisted|length }}{% endif %}</b></div>
+        {% if active_n_healthy.bad_nodes %}
         <table style="margin-top:8px">
           <thead><tr><th>Node</th><th>Pool</th><th>Class</th><th>Reason</th></tr></thead>
           <tbody>
-          {% for n in verify.bad_nodes|sort(attribute='name') %}
+          {% for n in active_n_healthy.bad_nodes|sort(attribute='name') %}
             <tr><td>{{ n.name }}</td><td class="mut">{{ n.pool }}</td>
                 <td class="mut">{{ n.cls }}</td>
                 <td><span class="pill failed">{{ n.reason }}</span></td></tr>
           {% endfor %}
           </tbody>
         </table>
-        {% if verify.to_cancel %}
+        {% if active_n_healthy.to_cancel %}
         <table style="margin-top:12px">
           <thead><tr><th>Node</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
           <tbody>
-          {% for r in verify.to_cancel %}
+          {% for r in active_n_healthy.to_cancel %}
             <tr><td>{{ r.node_name }}</td><td>{{ r.date_start[:16] }}</td><td>{{ r.date_end[:16] }}</td>
-                <td>{% if r.id in verify.cancelled %}<span class="pill created">released</span>{% else %}<span class="pill planned">found</span>{% endif %}</td></tr>
+                <td>{% if r.id in active_n_healthy.cancelled %}<span class="pill created">released</span>{% else %}<span class="pill planned">found</span>{% endif %}</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -368,10 +367,11 @@
   <div class="card">
     <div class="kv"><b>Denylist — confirmed-bad nodes run/plan skip</b></div>
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
-      Nodes released by <code>cancel-unhealthy</code>/<code>verify</code> are recorded in a
-      persistent <code>denylist.yaml</code>; from then on <b>run/plan skip them unconditionally</b>
-      — before the probe and even under no-probe. Re-enable a repaired node with <b>Allow</b>
-      below (tick the box to also reserve it, so <b>Verify</b> can re-test it once active).
+      Nodes released by <code>cancel-unhealthy</code>/<code>status --active_n_healthy</code> are
+      recorded in a persistent <code>denylist.yaml</code>; from then on <b>run/plan skip them
+      unconditionally</b> — before the probe and even under no-probe. Re-enable a repaired node
+      with <b>Allow</b> below (tick the box to also reserve it, so <b>Active &amp; healthy</b> can
+      re-test it once active).
     </div>
     <div class="row">
       <form action="{{ url_for('denylist_route') }}" method="post">
