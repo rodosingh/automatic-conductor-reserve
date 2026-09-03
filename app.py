@@ -14,7 +14,7 @@ import threading
 
 from flask import Flask, redirect, render_template, request, url_for
 
-from conductor_reserve import denylist, notify, probe
+from conductor_reserve import denylist, notify
 from conductor_reserve.config import load_config
 from conductor_reserve.engine import (CANCELLABLE_CLASSES, cancel_ids, cancel_small_gpu,
                                       cancel_small_window, cancel_unhealthy, run,
@@ -26,7 +26,7 @@ app = Flask(__name__)
 # Simple in-memory state for the last run + a lock so two clicks don't overlap.
 _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
-         "reserved": None, "health": None, "unhealthy": None, "verify": None,
+         "reserved": None, "health": None, "unhealthy": None, "active_n_healthy": None,
          "denylist": None, "allow": None, "small_window": None}
 
 
@@ -87,13 +87,14 @@ def _do_health():
         _last["running"] = False
 
 
-def _do_cancel_unhealthy(commit: bool, include_access: bool):
+def _do_cancel_unhealthy(commit: bool):
     cfg = load_config()
     _last["log"] = []
     _last["running"] = True
-    classes = tuple(CANCELLABLE_CLASSES) + ((probe.CLASS_ACCESS,) if include_access else ())
+    # Only genuine machine faults (broken/unreachable). A can't-log-in (access) failure is not
+    # decisive for a node we don't actively hold — judge those with the active-&-healthy card.
     try:
-        _last["unhealthy"] = cancel_unhealthy(cfg, commit=commit, classes=classes,
+        _last["unhealthy"] = cancel_unhealthy(cfg, commit=commit, classes=CANCELLABLE_CLASSES,
                                               progress=lambda m: _last["log"].append(m))
     finally:
         _last["running"] = False
@@ -110,8 +111,9 @@ def _do_cancel_small_window(commit: bool):
         _last["running"] = False
 
 
-def _do_verify(commit: bool):
-    """Probe the nodes we hold ACTIVE now; with commit, denylist + release the bad ones.
+def _do_active_n_healthy(commit: bool):
+    """`status --active_n_healthy`: probe the nodes we hold ACTIVE now; with commit, denylist +
+    release the bad ones.
 
     Report-only find first, then act on exactly that list (cancel_ids + denylist.add) so a
     second live probe can't shift the verdict between what was shown and what is written.
@@ -128,7 +130,7 @@ def _do_verify(commit: bool):
                 [{"name": n["name"], "hostname": n.get("hostname"), "reason": n["reason"],
                   "cls": n["cls"]} for n in res["bad_nodes"]])
         res.update(committed=bool(commit), cancelled=cancelled, denylisted=denylisted)
-        _last["verify"] = res
+        _last["active_n_healthy"] = res
         _last["denylist"] = denylist.load()  # refresh the viewer after a change
     finally:
         _last["running"] = False
@@ -168,7 +170,7 @@ def index():
         reserved=_last["reserved"],
         health=_last["health"],
         unhealthy=_last["unhealthy"],
-        verify=_last["verify"],
+        active_n_healthy=_last["active_n_healthy"],
         denylist=_last["denylist"],
         allow=_last["allow"],
         small_window=_last["small_window"],
@@ -233,10 +235,9 @@ def status_route():
 def cancel_unhealthy_route():
     """List our reservations on probe-failing nodes (dry-run), or cancel them if confirmed."""
     do_commit = request.form.get("confirm") == "on"
-    include_access = request.form.get("include_access") == "on"
     if not _last["running"]:
         with _lock:
-            _do_cancel_unhealthy(commit=do_commit, include_access=include_access)
+            _do_cancel_unhealthy(commit=do_commit)
     return redirect(url_for("index"))
 
 
@@ -259,13 +260,13 @@ def reserved_route():
     return redirect(url_for("index"))
 
 
-@app.route("/verify", methods=["POST"])
-def verify_route():
+@app.route("/active-n-healthy", methods=["POST"])
+def active_n_healthy_route():
     """Probe nodes we hold active now (dry-run), or denylist+release the bad ones if confirmed."""
     do_commit = request.form.get("confirm") == "on"
     if not _last["running"]:
         with _lock:
-            _do_verify(commit=do_commit)
+            _do_active_n_healthy(commit=do_commit)
     return redirect(url_for("index"))
 
 

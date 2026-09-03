@@ -52,11 +52,6 @@ def main(argv=None) -> int:
     al.add_argument("--commit", action="store_true",
                     help="also create a fresh reservation on each, so it can be re-tested while active")
     al.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
-    v = sub.add_parser("verify", parents=[common],
-                       help="probe nodes you hold an ACTIVE reservation on; denylist + release any still unhealthy")
-    v.add_argument("--commit", action="store_true",
-                   help="actually denylist + release the still-unhealthy held nodes (default: dry-run)")
-    v.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     c = sub.add_parser("cancel-small-gpu", parents=[common],
                        help="cancel OUR current+future reservations on nodes below min_gpus")
     c.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
@@ -65,9 +60,6 @@ def main(argv=None) -> int:
                         help="cancel OUR reservations on nodes that fail the SSH health probe")
     cu.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
     cu.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
-    cu.add_argument("--include-access", action="store_true",
-                    help="also release nodes we simply cannot log into from here "
-                         "(default: only genuinely broken/unreachable nodes)")
     csw = sub.add_parser("cancel-small-window", parents=[common],
                          help="cancel OUR reservations on fragmented nodes "
                               "(no run > min_continuous_hours & a gap >= max_gap_hours)")
@@ -86,7 +78,15 @@ def main(argv=None) -> int:
                     help="show only currently-reserved nodes, with who holds them and until when")
     st.add_argument("--continuous", action="store_true",
                     help="only nodes you hold ACTIVE now with gap-free coverage into the future")
+    st.add_argument("--active_n_healthy", action="store_true",
+                    help="probe ONLY nodes you hold an ACTIVE reservation on — the one state where "
+                         "an SSH failure is a real verdict; with --commit, denylist + release any "
+                         "still-unhealthy held node")
     st.add_argument("--fast", action="store_true", help="skip the reservation check (health only)")
+    st.add_argument("--commit", action="store_true",
+                    help="with --active_n_healthy: actually denylist + release the bad held nodes "
+                         "(default: dry-run)")
+    st.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     st.add_argument("--ssh-user", default=None, help="username for the printed rocm-smi ssh command")
     args = parser.parse_args(argv)
 
@@ -125,9 +125,6 @@ def main(argv=None) -> int:
 
     if args.cmd == "allow":
         return _allow(args)
-
-    if args.cmd == "verify":
-        return _verify(args)
 
     if args.cmd == "cancel-small-gpu":
         return _cancel_small_gpu(args)
@@ -253,6 +250,8 @@ def _status(args) -> int:
     """Report which nodes are free and healthy, and why the unhealthy ones failed."""
     import os
     from conductor_reserve.engine import status_report
+    if getattr(args, "active_n_healthy", False):
+        return _active_n_healthy(args)
     cfg = load_config()
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
@@ -362,7 +361,7 @@ def _status(args) -> int:
               f"reservation, {len(rows) - nblocked} unverified but still reserved.")
         _by_class(rows)
         print("\nRelease broken/unreachable ones:  python cli.py cancel-unhealthy --commit")
-        print("Include the no-access ones too:   python cli.py cancel-unhealthy --include-access --commit")
+        print("Judge no-access nodes you HOLD:    python cli.py status --active_n_healthy --commit")
         return 0
 
     print(f"\n{len(healthy_free)} free & healthy node(s).")
@@ -389,7 +388,10 @@ def _cancel_unhealthy(args) -> int:
     cfg = load_config()
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
-    classes = tuple(CANCELLABLE_CLASSES) + ((probe.CLASS_ACCESS,) if args.include_access else ())
+    # Only genuine machine faults (broken/unreachable). A can't-log-in (access) failure is
+    # NOT decisive for a node we don't actively hold — SSH is gated on holding it — so it is
+    # never cancelled here; judge those with `status --active_n_healthy` while they're active.
+    classes = tuple(CANCELLABLE_CLASSES)
     # First pass: probe + find only (no writes) so we can show and confirm.
     res = cancel_unhealthy(cfg, commit=False, classes=classes,
                            progress=lambda m: print("·", m) if args.verbose else None)
@@ -402,8 +404,9 @@ def _cancel_unhealthy(args) -> int:
         for n in sorted(nodes, key=lambda n: n["name"]):
             print(f"  {n['name'][:26]:26} [{n['cls']:11}] {n['reason'][:62]}")
     if kept:
-        print(f"\nkept — unhealthy but out of scope ({len(kept)}), "
-              f"reservations left alone{'' if args.include_access else '; add --include-access to release these'}:")
+        print(f"\nkept — look unhealthy but out of scope ({len(kept)}), reservations left alone "
+              f"(access failures are only decisive while you HOLD the node — see "
+              f"`status --active_n_healthy`):")
         for n in sorted(kept, key=lambda n: n["name"])[:50]:
             print(f"  {n['name'][:26]:26} [{n['cls']:11}] {n['reason'][:62]}")
     if not found:
@@ -467,14 +470,16 @@ def _allow(args) -> int:
     print(notify.format_console(result))
     if commit:
         print("\nReservations kicked off — they go ACTIVE after policy.start_lead_minutes.")
-        print("Once active, re-test with:  python cli.py verify --commit")
+        print("Once active, re-test with:  python cli.py status --active_n_healthy --commit")
     else:
         print("\n(dry-run) re-run with --commit to actually reserve & re-test these nodes.")
     return 0
 
 
-def _verify(args) -> int:
-    """Probe nodes we hold ACTIVE reservations on; denylist + release any still unhealthy."""
+def _active_n_healthy(args) -> int:
+    """`status --active_n_healthy`: probe nodes we hold ACTIVE now; with --commit, denylist +
+    release any still unhealthy. This is the one place a can't-log-in (access) failure is a real
+    verdict — the node is allocated to us, so the reservation-gating excuse is gone."""
     from conductor_reserve import denylist
     from conductor_reserve.engine import cancel_ids, verify_held
     cfg = load_config()
