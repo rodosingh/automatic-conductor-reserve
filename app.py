@@ -16,7 +16,7 @@ from flask import Flask, redirect, render_template, request, url_for
 
 from conductor_reserve import denylist, notify
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import (CANCELLABLE_CLASSES, cancel_ids, cancel_small_gpu,
+from conductor_reserve.engine import (CANCELLABLE_CLASSES, add_user, cancel_ids, cancel_small_gpu,
                                       cancel_small_window, cancel_unhealthy, run,
                                       status_report, sync_users, verify_held)
 
@@ -27,7 +27,7 @@ app = Flask(__name__)
 _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
          "reserved": None, "health": None, "unhealthy": None, "active_n_healthy": None,
-         "denylist": None, "allow": None, "small_window": None}
+         "denylist": None, "allow": None, "small_window": None, "add_user": None}
 
 
 def _do_run(commit: bool, filter_windows: bool = True, cancel_fragmented: bool = True):
@@ -61,6 +61,17 @@ def _do_sync(commit: bool):
     try:
         _last["sync"] = sync_users(cfg, commit=commit,
                                    progress=lambda m: _last["log"].append(m))
+    finally:
+        _last["running"] = False
+
+
+def _do_add_user(user: str, nodes: list, commit: bool):
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        _last["add_user"] = add_user(cfg, user=user, node_names=nodes or None, commit=commit,
+                                     progress=lambda m: _last["log"].append(m))
     finally:
         _last["running"] = False
 
@@ -175,6 +186,7 @@ def index():
         denylist=_last["denylist"],
         allow=_last["allow"],
         small_window=_last["small_window"],
+        add_user=_last["add_user"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -222,6 +234,18 @@ def sync_users_route():
     if not _last["running"]:
         with _lock:
             _do_sync(commit=do_commit)
+    return redirect(url_for("index"))
+
+
+@app.route("/add-user", methods=["POST"])
+def add_user_route():
+    """Add one person to our reservations (dry-run), scoped by node(s); write if confirmed."""
+    user = (request.form.get("user") or "").strip()
+    nodes = (request.form.get("nodes") or "").replace(",", " ").split()
+    do_commit = request.form.get("confirm") == "on"
+    if user and not _last["running"]:
+        with _lock:
+            _do_add_user(user, nodes, commit=do_commit)
     return redirect(url_for("index"))
 
 

@@ -31,6 +31,12 @@ python cli.py cancel-small-gpu --commit   # actually cancel (asks you to type 'y
 python cli.py sync-users                  # dry-run: lists reservations that would be updated
 python cli.py sync-users --commit         # add the default users (mode 'add' — never removes)
 
+# 5b) ADD-USER — add ONE person (need not be in config.yaml) to our reservations, scoped by node
+python cli.py add-user user@amd.com                       # dry-run: all our reservations, all nodes
+python cli.py add-user user@amd.com --node smci350-...    # scope to node(s); --node is repeatable
+python cli.py add-user user@amd.com --node N --commit     # actually add (mode 'add'; asks 'yes')
+# accepts email / NTID / "Last, First" / UUID; --pool <id> also scopes; additive & idempotent
+
 # 6) STATUS — which nodes are free & healthy, and WHY the rest are not (read-only)
 python cli.py status                      # table: gpu, docker, reserved, health/reason + an "UNHEALTHY" summary
 python cli.py status --free               # only free & healthy nodes + copy-paste rocm-smi cmds
@@ -239,6 +245,9 @@ python app.py               # open http://127.0.0.1:5057
   now; tick the box and **Denylist & release** to act on the bad ones (mirrors `status --active_n_healthy`).
 - **Sync-users card** → **Find (no update)** lists our ongoing+upcoming reservations; tick
   the box and **Add default users** to add the config's default users (mirrors `sync-users`).
+- **Add-user card** → type a person (email / "Last, First" / UUID — need not be in config) and,
+  optionally, node name(s); leave the box unticked for a dry-run find, tick **add user** and
+  submit to add them. Blank node box = every node we hold (mirrors `add-user [--node …]`).
 - **My reservations card** → **Show my reservations** lists the nodes YOU have reserved
   (ongoing + upcoming) with your window, block count, active/upcoming, and each node's health
   (mirrors `status --reserved`).
