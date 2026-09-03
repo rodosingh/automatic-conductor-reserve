@@ -14,10 +14,11 @@ import threading
 
 from flask import Flask, redirect, render_template, request, url_for
 
-from conductor_reserve import notify, probe
+from conductor_reserve import denylist, notify, probe
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import (CANCELLABLE_CLASSES, cancel_small_gpu,
-                                      cancel_unhealthy, run, status_report, sync_users)
+from conductor_reserve.engine import (CANCELLABLE_CLASSES, cancel_ids, cancel_small_gpu,
+                                      cancel_unhealthy, run, status_report, sync_users,
+                                      verify_held)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
@@ -25,7 +26,8 @@ app = Flask(__name__)
 # Simple in-memory state for the last run + a lock so two clicks don't overlap.
 _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
-         "reserved": None, "health": None, "unhealthy": None}
+         "reserved": None, "health": None, "unhealthy": None, "verify": None,
+         "denylist": None, "allow": None}
 
 
 def _do_run(commit: bool):
@@ -96,6 +98,53 @@ def _do_cancel_unhealthy(commit: bool, include_access: bool):
         _last["running"] = False
 
 
+def _do_verify(commit: bool):
+    """Probe the nodes we hold ACTIVE now; with commit, denylist + release the bad ones.
+
+    Report-only find first, then act on exactly that list (cancel_ids + denylist.add) so a
+    second live probe can't shift the verdict between what was shown and what is written.
+    """
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        res = verify_held(cfg, progress=lambda m: _last["log"].append(m))
+        cancelled, denylisted = [], []
+        if commit and res["bad_nodes"]:
+            cancelled = cancel_ids([r["id"] for r in res["to_cancel"]])
+            denylisted = denylist.add(
+                [{"name": n["name"], "hostname": n.get("hostname"), "reason": n["reason"],
+                  "cls": n["cls"]} for n in res["bad_nodes"]])
+        res.update(committed=bool(commit), cancelled=cancelled, denylisted=denylisted)
+        _last["verify"] = res
+        _last["denylist"] = denylist.load()  # refresh the viewer after a change
+    finally:
+        _last["running"] = False
+
+
+def _do_denylist():
+    _last["log"] = []
+    _last["denylist"] = denylist.load()
+
+
+def _do_allow(nodes: list, commit: bool):
+    """Remove node(s) from the denylist, and (with commit) reserve them to re-test while active."""
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        removed = [n for n in nodes if denylist.remove(n)]
+        _last["denylist"] = denylist.load()
+        result = None
+        if commit:
+            result = run(cfg, commit=True, node_names=nodes, probe_health=False,
+                         progress=lambda m: _last["log"].append(m))
+        _last["allow"] = {"nodes": nodes, "removed": removed, "committed": bool(commit),
+                          "result": result}
+    finally:
+        _last["running"] = False
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -106,6 +155,9 @@ def index():
         reserved=_last["reserved"],
         health=_last["health"],
         unhealthy=_last["unhealthy"],
+        verify=_last["verify"],
+        denylist=_last["denylist"],
+        allow=_last["allow"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -178,6 +230,35 @@ def reserved_route():
     if not _last["running"]:
         with _lock:
             _do_reserved()
+    return redirect(url_for("index"))
+
+
+@app.route("/verify", methods=["POST"])
+def verify_route():
+    """Probe nodes we hold active now (dry-run), or denylist+release the bad ones if confirmed."""
+    do_commit = request.form.get("confirm") == "on"
+    if not _last["running"]:
+        with _lock:
+            _do_verify(commit=do_commit)
+    return redirect(url_for("index"))
+
+
+@app.route("/denylist", methods=["POST"])
+def denylist_route():
+    """Show the persistent denylist that run/plan skip unconditionally. Read-only."""
+    with _lock:
+        _do_denylist()
+    return redirect(url_for("index"))
+
+
+@app.route("/allow", methods=["POST"])
+def allow_route():
+    """Remove node(s) from the denylist, and (with confirm) reserve them to re-test."""
+    nodes = (request.form.get("nodes") or "").replace(",", " ").split()
+    do_commit = request.form.get("confirm") == "on"
+    if nodes and not _last["running"]:
+        with _lock:
+            _do_allow(nodes, commit=do_commit)
     return redirect(url_for("index"))
 
 

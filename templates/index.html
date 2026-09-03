@@ -218,6 +218,9 @@
       <div style="margin-top:12px">
         <div class="kv"><b>{{ unhealthy.unhealthy_nodes|length }} node(s) in scope · {{ unhealthy.healthy }} healthy · {{ unhealthy.kept|length }} kept (out of scope) · {{ unhealthy.found|length }} of our reservation(s) on them{% if unhealthy.committed %} — cancelled {{ unhealthy.cancelled|length }}{% endif %}</b></div>
         <div class="mut" style="font-size:12px;margin-top:4px">classes in scope: {{ unhealthy.classes|join(', ') }}</div>
+        {% if unhealthy.denylisted %}
+        <div class="mut" style="font-size:12px;margin-top:4px">denylisted {{ unhealthy.denylisted|length }} broken node(s) — run/plan won't reserve them again: <code>{{ unhealthy.denylisted|join(', ') }}</code></div>
+        {% endif %}
         {% if unhealthy.unhealthy_nodes %}
         <table style="margin-top:8px">
           <thead><tr><th>Node</th><th>Pool</th><th>Class</th><th>Reason</th></tr></thead>
@@ -256,6 +259,104 @@
           </tbody>
         </table>
         {% else %}<div class="mut" style="font-size:13px;margin-top:8px">Nothing of ours to cancel on the unhealthy nodes.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="kv"><b>Verify the nodes you actively hold</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Probes <b>only nodes you hold an ACTIVE reservation on right now</b> — the one state where an
+      SSH failure is a real verdict (the reservation-gating excuse is gone). Any failing node
+      (including <code>access</code> — a login refused <i>while we hold it</i>) is genuinely bad;
+      with the box ticked it's written to the persistent denylist and <b>all</b> our reservations
+      on it (active + upcoming) are released. Mirrors <code>python cli.py verify</code>.
+    </div>
+    <div class="row">
+      <form action="{{ url_for('verify_route') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🩺 Verify held (no writes)</button>
+      </form>
+      <form action="{{ url_for('verify_route') }}" method="post" onsubmit="return confirm('Denylist + release the still-unhealthy nodes you actively hold?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — denylist &amp; release</label>
+        <button class="btn btn-commit" {% if running %}disabled{% endif %}>🚫 Denylist &amp; release</button>
+      </form>
+    </div>
+    {% if verify %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ verify.held }} node(s) held ACTIVE now · {{ verify.healthy_held }} healthy · {{ verify.bad_nodes|length }} still unhealthy while held{% if verify.committed %} — released {{ verify.cancelled|length }} reservation(s), denylisted {{ verify.denylisted|length }}{% endif %}</b></div>
+        {% if verify.bad_nodes %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Pool</th><th>Class</th><th>Reason</th></tr></thead>
+          <tbody>
+          {% for n in verify.bad_nodes|sort(attribute='name') %}
+            <tr><td>{{ n.name }}</td><td class="mut">{{ n.pool }}</td>
+                <td class="mut">{{ n.cls }}</td>
+                <td><span class="pill failed">{{ n.reason }}</span></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if verify.to_cancel %}
+        <table style="margin-top:12px">
+          <thead><tr><th>Node</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
+          <tbody>
+          {% for r in verify.to_cancel %}
+            <tr><td>{{ r.node_name }}</td><td>{{ r.date_start[:16] }}</td><td>{{ r.date_end[:16] }}</td>
+                <td>{% if r.id in verify.cancelled %}<span class="pill created">released</span>{% else %}<span class="pill planned">found</span>{% endif %}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">Every node you actively hold is healthy — nothing to denylist or release.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="kv"><b>Denylist — confirmed-bad nodes run/plan skip</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Nodes released by <code>cancel-unhealthy</code>/<code>verify</code> are recorded in a
+      persistent <code>denylist.yaml</code>; from then on <b>run/plan skip them unconditionally</b>
+      — before the probe and even under no-probe. Re-enable a repaired node with <b>Allow</b>
+      below (tick the box to also reserve it, so <b>Verify</b> can re-test it once active).
+    </div>
+    <div class="row">
+      <form action="{{ url_for('denylist_route') }}" method="post">
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>📄 Show denylist</button>
+      </form>
+      <form action="{{ url_for('allow_route') }}" method="post" onsubmit="return this.confirm.checked ? confirm('Remove from denylist AND create a fresh reservation to re-test?') : true;">
+        <input type="text" name="nodes" placeholder="node name(s), space/comma separated"
+               style="padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:#0b0e12;color:var(--fg);min-width:260px">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> also reserve to re-test</label>
+        <button class="btn btn-commit" {% if running %}disabled{% endif %}>✓ Allow</button>
+      </form>
+    </div>
+    {% if denylist is not none %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ denylist|length }} node(s) denylisted</b></div>
+        {% if denylist %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Class</th><th>Reason</th><th>Since</th></tr></thead>
+          <tbody>
+          {% for name, info in denylist|dictsort %}
+            <tr><td>{{ name }}</td><td class="mut">{{ info.cls }}</td>
+                <td class="mut">{{ info.reason }}</td><td class="mut">{{ info.added }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">Denylist is empty — no nodes are being skipped.</div>{% endif %}
+      </div>
+    {% endif %}
+    {% if allow %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>Allow: removed {{ allow.removed|length }} of {{ allow.nodes|length }} from denylist{% if allow.committed and allow.result %} · reserved {{ allow.result.summary().created }} block(s){% endif %}</b></div>
+        {% if allow.committed and allow.result %}
+        <div class="mut" style="font-size:12px;margin-top:4px">
+          Reservations kicked off — they go ACTIVE after <code>policy.start_lead_minutes</code>.
+          Once active, re-test with <b>Verify</b> above.
+        </div>
+        {% elif allow.committed %}
+        <div class="mut" style="font-size:12px;margin-top:4px">Nodes removed from denylist; no reservation was created (none were listed, or none eligible).</div>
+        {% endif %}
       </div>
     {% endif %}
   </div>
@@ -314,7 +415,7 @@
         <div class="kv"><b>{{ reserved|length }} node(s) reserved by you</b></div>
         {% if reserved %}
         <table style="margin-top:8px">
-          <thead><tr><th>Node</th><th>Pool</th><th>GPU</th><th>Health</th><th>Your hold (UTC)</th><th>#</th><th>State</th><th>Title</th></tr></thead>
+          <thead><tr><th>Node</th><th>Pool</th><th>GPU</th><th>Health</th><th>Your hold (UTC)</th><th>#</th><th>State</th><th>Continuous</th><th>Title</th></tr></thead>
           <tbody>
           {% for r in reserved|sort(attribute='name') %}
             {% set mine = r.mine %}
@@ -326,10 +427,19 @@
                 <td>{{ mine[0].date_start[5:16] }} → {{ (mine|map(attribute='date_end')|max)[5:16] }}</td>
                 <td class="mut">{{ mine|length }}</td>
                 <td>{% if active %}<span class="pill created">active</span>{% else %}<span class="pill planned">upcoming</span>{% endif %}</td>
+                <td>{% if r.held_continuous %}<span class="pill created">gap-free → {{ r.held_until[5:16] }}</span>
+                    {% elif r.held_now %}<span class="pill failed">gap ahead</span>
+                    {% else %}<span class="mut">—</span>{% endif %}</td>
                 <td class="mut">{{ mine[0].title }}</td></tr>
           {% endfor %}
           </tbody>
         </table>
+        {% set contn = reserved|selectattr('held_continuous')|list %}
+        <div class="mut" style="font-size:12px;margin-top:8px">
+          <span class="pill created">gap-free → date</span> = active now with unbroken coverage
+          to that date · <span class="pill failed">gap ahead</span> = active now but your hold
+          lapses then resumes later. {{ contn|length }} node(s) are gap-free into the future.
+        </div>
         {% else %}<div class="mut" style="font-size:13px;margin-top:6px">You have no reservations on the configured pools' nodes.</div>{% endif %}
       </div>
     {% endif %}
