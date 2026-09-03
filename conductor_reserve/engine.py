@@ -237,7 +237,7 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
 
     # 1c) window filter: pull our existing reservations so "continuous hold" is judged over
     # our TOTAL coverage (existing + newly planned), not just the new blocks.
-    min_cont_s = float(policy.get("min_continuous_hours", 24)) * 3600
+    min_cont_s = float(policy.get("min_continuous_hours", 12)) * 3600
     max_gap_s = float(policy.get("max_gap_hours", 12)) * 3600
     existing_iv: dict = {}
     if filter_windows and eligible_nodes:
@@ -443,7 +443,7 @@ def cancel_small_window(config: dict, *, commit: bool = False,
 
     client = client or ConductorClient()
     policy = config.get("policy", {})
-    min_cont_s = float(policy.get("min_continuous_hours", 24)) * 3600
+    min_cont_s = float(policy.get("min_continuous_hours", 12)) * 3600
     max_gap_s = float(policy.get("max_gap_hours", 12)) * 3600
     title = config["reservation"]["title"]
     pairs, _, _, _ = _enumerate_nodes(client, config, emit)

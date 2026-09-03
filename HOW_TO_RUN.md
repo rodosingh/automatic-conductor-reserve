@@ -66,7 +66,7 @@ python cli.py allow <node> --commit       # re-enable AND reserve it, so step 8 
 **Only worthwhile nodes are reserved (window filter, on by default).** A large team piles up
 a lot of small, scattered reservations, so `plan`/`run` skip fragmented nodes: a node is kept
 only if our **total hold** (existing reservations + the blocks this run would add) gives one
-**continuous stretch over `policy.min_continuous_hours`** (default 24h), *or* leaves
+**continuous stretch over `policy.min_continuous_hours`** (default 12h), *or* leaves
 **inter-block gaps all under `policy.max_gap_hours`** (default 12h) — between any two adjacent
 blocks we hold, we're out of the node for under 12h. The wait before our first block isn't a
 gap, and a single unbroken block always passes. Nodes that only offer short slivers split by
