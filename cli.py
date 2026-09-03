@@ -68,6 +68,11 @@ def main(argv=None) -> int:
     cu.add_argument("--include-access", action="store_true",
                     help="also release nodes we simply cannot log into from here "
                          "(default: only genuinely broken/unreachable nodes)")
+    csw = sub.add_parser("cancel-small-window", parents=[common],
+                         help="cancel OUR reservations on fragmented nodes "
+                              "(no run > min_continuous_hours & a gap >= max_gap_hours)")
+    csw.add_argument("--commit", action="store_true", help="actually cancel (default: dry-run)")
+    csw.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     su = sub.add_parser("sync-users", parents=[common],
                         help="add config's default users to our existing (ongoing+upcoming) reservations")
     su.add_argument("--commit", action="store_true", help="actually update (default: dry-run)")
@@ -129,6 +134,9 @@ def main(argv=None) -> int:
 
     if args.cmd == "cancel-unhealthy":
         return _cancel_unhealthy(args)
+
+    if args.cmd == "cancel-small-window":
+        return _cancel_small_window(args)
 
     if args.cmd == "sync-users":
         return _sync_users(args)
@@ -193,6 +201,44 @@ def _cancel_small_gpu(args) -> int:
         return 1
     out = cancel_small_gpu(cfg, commit=True)
     print(f"cancelled {len(out['cancelled'])} reservation(s): {', '.join(out['cancelled'])}")
+    return 0
+
+
+def _cancel_small_window(args) -> int:
+    """Find and (with --commit) cancel our reservations on fragmented (small-window) nodes."""
+    from conductor_reserve.engine import cancel_ids, cancel_small_window
+    cfg = load_config()
+    if getattr(args, "pool", None):
+        cfg = _filter_pools(cfg, args.pool)
+    # First pass: find only (no writes) so we can show and confirm.
+    res = cancel_small_window(cfg, commit=False,
+                              progress=lambda m: print("·", m) if args.verbose else None)
+    frag, found = res["fragmented"], res["found"]
+    print(f"fragmented nodes (no run > {res['min_continuous_hours']:.0f}h continuous "
+          f"& a gap >= {res['max_gap_hours']:.0f}h): {len(frag)} "
+          f"| our reservations on them: {len(found)}")
+    if frag:
+        print("\nfragmented & in scope:")
+        for n in sorted(frag, key=lambda n: n["name"]):
+            print(f"  {n['name'][:26]:26} best {n['longest_h']:>5.1f}h continuous, "
+                  f"largest gap {n['gap_h']:>5.1f}h  ({n['count']} resv)")
+    if not found:
+        print(f"\nno reservations titled {res['title']!r} on fragmented nodes — nothing to cancel.")
+        return 0
+    print(f"\nour reservations on fragmented nodes ({len(found)}):")
+    for r in sorted(found, key=lambda r: r["node_name"]):
+        print(f"  {r['node_name'][:26]:26} {r['date_start'][:16]} -> {r['date_end'][:16]} "
+              f"| {r['id']}")
+    if not args.commit:
+        print("\n(dry-run) re-run with --commit to cancel these.")
+        return 0
+    if not args.yes and input(
+            f"\nCancel these {len(found)} reservation(s)? Type 'yes': ").strip().lower() != "yes":
+        print("aborted.")
+        return 1
+    # Cancel exactly the ids listed above (fragmentation is transient; no denylisting).
+    cancelled = cancel_ids([r["id"] for r in found])
+    print(f"cancelled {len(cancelled)}/{len(found)} reservation(s)")
     return 0
 
 

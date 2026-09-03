@@ -50,6 +50,7 @@ python cli.py run --commit           # create the reservations (asks for a typed
 python cli.py run --commit --node N  # reserve a single node picked from `status`
 python cli.py cancel-unhealthy       # release nodes the probe proves are broken/unreachable
 python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
+python cli.py cancel-small-window    # cancel our reservations on fragmented (small-window) nodes
 python cli.py verify                 # probe nodes you HOLD now; denylist+release any still unhealthy
 python cli.py denylist               # show confirmed-bad nodes that run/plan now skip
 python cli.py allow N                # re-enable a denylisted node (add --commit to also re-reserve it)
@@ -79,6 +80,11 @@ our first block doesn't count as a gap, and a single unbroken block always passe
 nodes with `--node`, or passing `--include-small-window`, bypasses the filter and reserves the
 fragmented nodes too (`allow --commit` also bypasses it, since its job is to re-book a node to
 re-test it). Tune the thresholds under `policy` in `config.yaml`.
+
+The cancel-side complement is `cancel-small-window`: it releases reservations we **already**
+hold on nodes that are now fragmented by the same test (no run over `min_continuous_hours` and
+a gap of at least `max_gap_hours`). Unlike a broken node, a fragmented one is **not** denylisted
+— fragmentation is transient, so `run` may re-book it once the surrounding gaps close.
 
 ### Node health
 
@@ -144,6 +150,8 @@ python app.py                 # http://127.0.0.1:5057
   machine; nodes we merely can't log into are listed separately and kept (tick *include
   no-access* to release those too).
 - **Cancel card** — find/cancel our reservations on sub-`min_gpus` nodes.
+- **Cancel small-window card** — find/cancel our reservations on fragmented nodes (same
+  window test as the reserve filter); these nodes are not denylisted.
 - **Sync-users card** — add the config's default users to existing reservations.
 - **My reservations card** — nodes you have reserved (ongoing + upcoming), with each one's
   health, mirrors `status --reserved`.
