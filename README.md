@@ -71,7 +71,7 @@ With a large team you accumulate a lot of small, scattered reservations. By defa
 and `run` **keep only nodes worth holding**: a node is reserved only if our **total hold**
 (existing reservations + the blocks this run would add) gives either
 
-- one **continuous stretch longer than `policy.min_continuous_hours`** (default 24h), **or**
+- one **continuous stretch longer than `policy.min_continuous_hours`** (default 12h), **or**
 - **inter-block gaps all shorter than `policy.max_gap_hours`** (default 12h) — i.e. between
   any two adjacent blocks we hold, we're only out of the node for under 12h.
 
@@ -181,7 +181,7 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `policy.min_reservation_minutes` | skip free gaps shorter than this |
 | `policy.start_lead_minutes` | never start earlier than now + this |
 | `policy.min_gpus` | exclude nodes with fewer than this many GPUs |
-| `policy.min_continuous_hours` | window filter: keep a node if our total hold gives a continuous stretch longer than this (default 24) |
+| `policy.min_continuous_hours` | window filter: keep a node if our total hold gives a continuous stretch longer than this (default 12) |
 | `policy.max_gap_hours` | window filter: else keep it if every gap between adjacent blocks we hold is under this (default 12) |
 | `ssh_user` | username the health probe logs in as (also used in printed `ssh` commands) |
 | `health_probe.enabled` | run the SSH health probe at all (`false` = Conductor's scraped data only) |

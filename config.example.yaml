@@ -44,7 +44,7 @@ policy:
   # A node is kept only if our TOTAL hold (existing + planned) gives one continuous stretch
   # longer than min_continuous_hours, OR leaves inter-block gaps all under max_gap_hours.
   # Bypass for a run with `--include-small-window` (CLI) / the web checkbox.
-  min_continuous_hours: 24
+  min_continuous_hours: 12
   max_gap_hours: 12
   # Fallback limits for pools that set NO reservation_duration_limit / furthest_future.
   # Used only when the pool itself specifies no limit.
