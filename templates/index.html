@@ -64,9 +64,11 @@
     <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
     <div class="row">
       <form action="{{ url_for('plan') }}" method="post">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="include_small_window"> include small-window nodes</label>
         <button class="btn btn-plan" {% if running %}disabled{% endif %}>▶ Dry-run plan (no writes)</button>
       </form>
       <form action="{{ url_for('commit') }}" method="post" onsubmit="return confirm('Create REAL reservations on shared lab nodes?');">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="include_small_window"> include small-window nodes</label>
         <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — reserve for real</label>
         <button class="btn btn-commit" {% if running %}disabled{% endif %}>✓ Reserve for real</button>
       </form>
@@ -78,6 +80,11 @@
       blocks out to ~14 days. Nodes with fewer than {{ config.policy.min_gpus or 2 }} GPUs are excluded,
       and every remaining node is SSH-probed first — only nodes that accept a key-only login and
       have working <code>rocm-smi</code> + <code>docker</code> are reserved.
+      By default we also <b>skip fragmented nodes</b> — a node is kept only if our total hold
+      (existing + planned) gives one continuous stretch over
+      {{ config.policy.min_continuous_hours or 24 }}h, or leaves inter-block gaps all under
+      {{ config.policy.max_gap_hours or 12 }}h. Tick <b>include small-window nodes</b> to reserve
+      the rest too.
     </div>
   </div>
 

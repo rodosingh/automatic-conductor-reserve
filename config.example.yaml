@@ -40,6 +40,12 @@ policy:
   start_lead_minutes: 20          # never start earlier than now + this many minutes
   # Exclude nodes with fewer than this many GPUs.
   min_gpus: 2
+  # Window filter (on by default): skip nodes whose obtainable window is too fragmented.
+  # A node is kept only if our TOTAL hold (existing + planned) gives one continuous stretch
+  # longer than min_continuous_hours, OR leaves inter-block gaps all under max_gap_hours.
+  # Bypass for a run with `--include-small-window` (CLI) / the web checkbox.
+  min_continuous_hours: 24
+  max_gap_hours: 12
   # Fallback limits for pools that set NO reservation_duration_limit / furthest_future.
   # Used only when the pool itself specifies no limit.
   default_duration_hours: 24

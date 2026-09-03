@@ -30,12 +30,13 @@ _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": No
          "denylist": None, "allow": None}
 
 
-def _do_run(commit: bool):
+def _do_run(commit: bool, filter_windows: bool = True):
     cfg = load_config()
     _last["log"] = []
     _last["running"] = True
     try:
-        result = run(cfg, commit=commit, progress=lambda m: _last["log"].append(m))
+        result = run(cfg, commit=commit, filter_windows=filter_windows,
+                     progress=lambda m: _last["log"].append(m))
         _last["result"] = result
     finally:
         _last["running"] = False
@@ -137,8 +138,9 @@ def _do_allow(nodes: list, commit: bool):
         _last["denylist"] = denylist.load()
         result = None
         if commit:
+            # No window filter: we're re-booking specific nodes to re-test them.
             result = run(cfg, commit=True, node_names=nodes, probe_health=False,
-                         progress=lambda m: _last["log"].append(m))
+                         filter_windows=False, progress=lambda m: _last["log"].append(m))
         _last["allow"] = {"nodes": nodes, "removed": removed, "committed": bool(commit),
                           "result": result}
     finally:
@@ -167,9 +169,10 @@ def index():
 
 @app.route("/plan", methods=["POST"])
 def plan():
+    filter_windows = request.form.get("include_small_window") != "on"
     if not _last["running"]:
         with _lock:
-            _do_run(commit=False)
+            _do_run(commit=False, filter_windows=filter_windows)
     return redirect(url_for("index"))
 
 
@@ -178,9 +181,10 @@ def commit():
     if request.form.get("confirm") != "on":
         _last["log"] = ["Refused: you must tick the confirm box to create real reservations."]
         return redirect(url_for("index"))
+    filter_windows = request.form.get("include_small_window") != "on"
     if not _last["running"]:
         with _lock:
-            _do_run(commit=True)
+            _do_run(commit=True, filter_windows=filter_windows)
     return redirect(url_for("index"))
 
 
