@@ -142,7 +142,8 @@ def _probe_filter(config: dict, pairs: list, emit,
 
 def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient] = None,
         progress=None, node_names: Optional[list] = None,
-        probe_health: bool = True, filter_windows: bool = True) -> RunResult:
+        probe_health: bool = True, filter_windows: bool = True,
+        cancel_fragmented: bool = True) -> RunResult:
     """Execute one planning (and optionally committing) run.
 
     progress: optional callable(str) for live status lines (used by the web UI).
@@ -152,6 +153,9 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
     filter_windows: skip nodes whose obtainable window is too fragmented — kept only if our
         TOTAL hold (existing + planned) gives one continuous run longer than
         policy.min_continuous_hours, or inter-block gaps all under policy.max_gap_hours.
+    cancel_fragmented: after booking, cancel our reservations on nodes still fragmented by the
+        same window test (default on). In dry-run this only previews. Skipped when node_names
+        is given (a targeted run must not sweep unrelated holdings).
     """
     def emit(msg: str):
         LOG.info(msg)
@@ -295,6 +299,20 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
         emit("nothing to commit")
     else:
         emit(f"dry-run complete: {len(result.plan)} reservation(s) would be created")
+
+    # 4) post-run cleanup: cancel our reservations on nodes STILL fragmented after this run's
+    # bookings (default on). Running it after _commit means the just-created blocks count toward
+    # each node's coverage, so a node this run de-fragmented is spared. Dry-run only previews.
+    if cancel_fragmented and node_names is None:
+        sw = cancel_small_window(config, commit=commit, client=client, progress=progress)
+        result.cancelled_fragmented = sw
+        n_nodes = len(sw["fragmented"])
+        if commit:
+            emit(f"cleanup: cancelled {len(sw['cancelled'])} reservation(s) on "
+                 f"{n_nodes} still-fragmented node(s)")
+        elif sw["found"]:
+            emit(f"cleanup preview: {len(sw['found'])} reservation(s) on {n_nodes} fragmented "
+                 f"node(s) would be cancelled (--no-cancel-fragmented to skip)")
 
     result.finished_at = datetime.now(timezone.utc)
     write_run_log(result)

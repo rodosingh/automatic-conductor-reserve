@@ -42,6 +42,9 @@ def main(argv=None) -> int:
     r.add_argument("--commit", action="store_true", help="actually create reservations")
     r.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     r.add_argument("--include-small-window", action="store_true", help=swindow_help)
+    r.add_argument("--no-cancel-fragmented", action="store_true",
+                   help="don't auto-cancel our reservations on nodes still fragmented after the run "
+                        "(cleanup is on by default)")
     sub.add_parser("whoami", parents=[common], help="verify authentication and list your teams")
     sub.add_parser("runs", parents=[common], help="list past run summaries")
     sub.add_parser("denylist", parents=[common],
@@ -160,9 +163,15 @@ def main(argv=None) -> int:
     filter_windows = not getattr(args, "include_small_window", False) and not getattr(args, "node", None)
     result = run(cfg, commit=commit, node_names=getattr(args, "node", None),
                  probe_health=not args.no_probe, filter_windows=filter_windows,
+                 cancel_fragmented=not getattr(args, "no_cancel_fragmented", False),
                  progress=lambda m: print("·", m) if args.verbose else None)
     print()
     print(notify.format_console(result))
+    sw = result.cancelled_fragmented
+    if sw and sw["found"]:
+        verb = "cancelled" if sw["committed"] else "would cancel"
+        print(f"cleanup: {verb} {len(sw['found'])} reservation(s) on {len(sw['fragmented'])} "
+              f"still-fragmented node(s): {', '.join(n['name'] for n in sw['fragmented'])}")
     return 0
 
 

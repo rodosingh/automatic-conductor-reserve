@@ -81,6 +81,8 @@ class RunResult:
     nodes: list[NodeInfo] = field(default_factory=list)
     plan: list[PlanItem] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Post-run cancel-small-window cleanup (None if not run); dict from engine.cancel_small_window.
+    cancelled_fragmented: Optional[dict] = None
 
     @property
     def created(self) -> int:
