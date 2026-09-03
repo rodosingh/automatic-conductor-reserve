@@ -75,6 +75,14 @@ long gaps are dropped (the skip reason is printed). Pass `--include-small-window
 `allow --commit` bypass the filter as well. Tune the two thresholds under `policy` in
 `config.yaml`.
 
+**`run --commit` also tears down what's still fragmented afterward.** Once it has booked, it
+re-runs the same window test over each node's final hold (existing + newly created) and cancels
+our reservations on any node still fragmented — so freshly-de-fragmented nodes are spared, and
+leftover slivers are cleaned up in the same step. `plan` / dry-run `run` only *preview* this.
+Opt out with `--no-cancel-fragmented` (or the web **don't cancel still-fragmented nodes after**
+checkbox); a targeted `run --node N` never sweeps other nodes. It's the same logic as the
+standalone `cancel-small-window` command, just folded into the reserve step.
+
 ### What "healthy" means
 
 `status`, `plan` and `run` all SSH into each candidate node and check three things. A node is

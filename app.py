@@ -30,12 +30,13 @@ _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": No
          "denylist": None, "allow": None, "small_window": None}
 
 
-def _do_run(commit: bool, filter_windows: bool = True):
+def _do_run(commit: bool, filter_windows: bool = True, cancel_fragmented: bool = True):
     cfg = load_config()
     _last["log"] = []
     _last["running"] = True
     try:
         result = run(cfg, commit=commit, filter_windows=filter_windows,
+                     cancel_fragmented=cancel_fragmented,
                      progress=lambda m: _last["log"].append(m))
         _last["result"] = result
     finally:
@@ -196,9 +197,11 @@ def commit():
         _last["log"] = ["Refused: you must tick the confirm box to create real reservations."]
         return redirect(url_for("index"))
     filter_windows = request.form.get("include_small_window") != "on"
+    cancel_fragmented = request.form.get("no_cancel_fragmented") != "on"
     if not _last["running"]:
         with _lock:
-            _do_run(commit=True, filter_windows=filter_windows)
+            _do_run(commit=True, filter_windows=filter_windows,
+                    cancel_fragmented=cancel_fragmented)
     return redirect(url_for("index"))
 
 

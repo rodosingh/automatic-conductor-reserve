@@ -47,7 +47,8 @@ python cli.py status --unhealthy     # only unhealthy nodes, with the reason eac
 python cli.py status --reserved      # only nodes YOU have reserved (ongoing + upcoming)
 python cli.py status --active_n_healthy  # probe nodes you HOLD now; --commit denylists+releases the bad
 python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
-python cli.py run --commit           # create the reservations (asks for a typed 'yes')
+python cli.py run --commit           # create the reservations, then cancel still-fragmented ones
+python cli.py run --commit --no-cancel-fragmented  # ...but keep the fragmented ones
 python cli.py run --commit --node N  # reserve a single node picked from `status`
 python cli.py cancel-unhealthy       # release nodes the probe proves are broken/unreachable
 python cli.py cancel-small-gpu       # cancel our reservations on excluded (sub-min_gpus) nodes
@@ -61,7 +62,8 @@ python cli.py runs                   # list past run summaries
 Shared flags on `plan` / `run` (and where noted): `--pool <id>` (repeatable, restrict pools),
 `--node <name>` (repeatable, restrict to specific nodes — short name or full hostname),
 `--no-probe` (skip the SSH health probe), `--include-small-window` (also reserve fragmented
-nodes — see below), `--yes` (skip the confirm prompt), `-v` (live progress).
+nodes — see below), `--no-cancel-fragmented` (`run` only — skip the post-run cleanup below),
+`--yes` (skip the confirm prompt), `-v` (live progress).
 `run`/`cancel-unhealthy`/`cancel-small-gpu`/`sync-users` are **dry-run** until you add
 `--commit`.
 
@@ -85,6 +87,12 @@ The cancel-side complement is `cancel-small-window`: it releases reservations we
 hold on nodes that are now fragmented by the same test (no run over `min_continuous_hours` and
 a gap of at least `max_gap_hours`). Unlike a broken node, a fragmented one is **not** denylisted
 — fragmentation is transient, so `run` may re-book it once the surrounding gaps close.
+
+**`run --commit` does this cleanup automatically.** After booking, it re-checks every node's
+total hold and cancels the ones still fragmented (evaluated *after* the new blocks, so a node
+this run stitched back together is spared). `plan` and dry-run `run` only *preview* the
+cancellations. Skip the cleanup with `--no-cancel-fragmented`; a targeted `run --node N` never
+sweeps other nodes.
 
 ### Node health
 
@@ -189,6 +197,29 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `health_probe.timeout_s` / `workers` | per-node time budget, and how many nodes to probe in parallel |
 | `health_probe.block_classes` | which probe failures disqualify a node (default `[broken, unreachable]` — `access` is not blocking) |
 | `policy.default_duration_hours` / `default_horizon_days` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
+
+### Adding a teammate
+
+Users live in `reservation.users` in `config.yaml` — there is no "add user" command that
+takes a name inline. To add someone:
+
+1. Add their identifier to the list (an **AMD email** is easiest; NTID, `"Last, First"`, or UUID
+   also resolve). You're always auto-included, so don't list yourself.
+   ```yaml
+   reservation:
+     users:
+       - "teammate1@amd.com"
+       - "newperson@amd.com"      # ← add here
+   ```
+2. Confirm it resolves (dry-run): `python cli.py sync-users`. If you see
+   `WARNING: unresolved users skipped: …`, the directory couldn't find that identifier and it
+   would be **silently dropped** — fix the spelling/email before committing.
+3. Apply it:
+   - **New reservations** pick them up automatically on the next `python cli.py run --commit`.
+   - **Existing** (ongoing + upcoming) reservations: `python cli.py sync-users --commit` adds
+     them to every reservation with our title (additive — it never removes anyone).
+
+There is no per-single-reservation add; `sync-users` is all-or-nothing across our reservations.
 
 ## How eligibility & scheduling work
 

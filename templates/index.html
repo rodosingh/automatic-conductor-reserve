@@ -69,6 +69,7 @@
       </form>
       <form action="{{ url_for('commit') }}" method="post" onsubmit="return confirm('Create REAL reservations on shared lab nodes?');">
         <label class="mut" style="font-size:13px"><input type="checkbox" name="include_small_window"> include small-window nodes</label>
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="no_cancel_fragmented"> don't cancel still-fragmented nodes after</label>
         <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> I understand — reserve for real</label>
         <button class="btn btn-commit" {% if running %}disabled{% endif %}>✓ Reserve for real</button>
       </form>
@@ -513,6 +514,12 @@
         {% endif %}
       </div>
       {% if s.errors %}<div class="warnbar" style="margin-top:12px">{{ s.errors|join('; ') }}</div>{% endif %}
+      {% set sw = result.cancelled_fragmented %}
+      {% if sw and sw.found %}
+        <div class="mut" style="margin-top:12px">Cleanup: {{ 'cancelled' if sw.committed else 'would cancel' }}
+          {{ sw.found|length }} reservation(s) on {{ sw.fragmented|length }} still-fragmented node(s) —
+          {{ sw.fragmented|map(attribute='name')|join(', ') }}</div>
+      {% endif %}
     </div>
 
     <div class="card">
