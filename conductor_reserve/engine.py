@@ -39,6 +39,26 @@ def _merge_iv(intervals):
     return merged
 
 
+def _window_quality(coverage, min_cont_s: float, max_gap_s: float):
+    """Judge how good our TOTAL hold on one node would be.
+
+    `coverage` is the list of (start, end) intervals we would hold on the node — our
+    existing reservations plus the blocks this run would newly create. We merge them into
+    continuous runs and keep the node if EITHER one run lasts longer than `min_cont_s`, OR
+    every gap *between two adjacent runs of ours* is shorter than `max_gap_s` (a single
+    unbroken run has no such gaps, so it always passes). A leading wait before our first
+    block is not a gap. Returns (keep, longest_run_seconds, largest_inter_gap_seconds).
+    """
+    merged = _merge_iv([(_as_utc(s), _as_utc(e)) for s, e in coverage])
+    if not merged:
+        return False, 0.0, 0.0
+    longest = max((e - s).total_seconds() for s, e in merged)
+    gaps = [(merged[i + 1][0] - merged[i][1]).total_seconds() for i in range(len(merged) - 1)]
+    biggest_gap = max(gaps) if gaps else 0.0
+    keep = longest > min_cont_s or all(g < max_gap_s for g in gaps)
+    return keep, longest, biggest_gap
+
+
 def _enumerate_nodes(client: ConductorClient, config: dict, emit):
     """Every configured pool's systems, with each pool's `only_nodes` filter applied.
 
@@ -122,13 +142,16 @@ def _probe_filter(config: dict, pairs: list, emit,
 
 def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient] = None,
         progress=None, node_names: Optional[list] = None,
-        probe_health: bool = True) -> RunResult:
+        probe_health: bool = True, filter_windows: bool = True) -> RunResult:
     """Execute one planning (and optionally committing) run.
 
     progress: optional callable(str) for live status lines (used by the web UI).
     node_names: if given, restrict to eligible nodes whose name matches one of these
         (domain-insensitive) — e.g. reserve a single node picked from `status`.
     probe_health: SSH-probe each candidate node and reserve only the healthy ones.
+    filter_windows: skip nodes whose obtainable window is too fragmented — kept only if our
+        TOTAL hold (existing + planned) gives one continuous run longer than
+        policy.min_continuous_hours, or inter-block gaps all under policy.max_gap_hours.
     """
     def emit(msg: str):
         LOG.info(msg)
@@ -212,8 +235,19 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
         eligible_nodes = eligible_nodes[: int(max_nodes)]
         emit(f"capping to first {max_nodes} eligible nodes")
 
+    # 1c) window filter: pull our existing reservations so "continuous hold" is judged over
+    # our TOTAL coverage (existing + newly planned), not just the new blocks.
+    min_cont_s = float(policy.get("min_continuous_hours", 24)) * 3600
+    max_gap_s = float(policy.get("max_gap_hours", 12)) * 3600
+    existing_iv: dict = {}
+    if filter_windows and eligible_nodes:
+        for r in client.find_our_reservations([n.id for n, _ in eligible_nodes], set(),
+                                              {res_cfg["title"]}):
+            existing_iv.setdefault(str(r["node_id"]), []).append((r["date_start"], r["date_end"]))
+
     # 2) build greedy plan (read-only conflict checks)
     emit(f"planning across {len(eligible_nodes)} eligible node(s)...")
+    windowed_out: list[str] = []
     for node, pool in eligible_nodes:
         try:
             items = scheduler.plan_node(
@@ -225,10 +259,24 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
             result.errors.append(f"plan {node.name}: {e}")
             emit(f"  plan error on {node.name}: {e}")
             continue
+        if filter_windows and items:
+            coverage = ([(p.date_start, p.date_end) for p in items]
+                        + existing_iv.get(str(node.id), []))
+            keep, longest, gap = _window_quality(coverage, min_cont_s, max_gap_s)
+            if not keep:
+                windowed_out.append(node.name)
+                emit(f"  skipping {node.name}: fragmented window "
+                     f"(best continuous {longest / 3600:.1f}h, largest inter-block gap "
+                     f"{gap / 3600:.1f}h)")
+                continue
         result.plan.extend(items)
         if items:
             emit(f"  {node.name}: {len(items)} reservation(s) planned "
                  f"({items[0].date_start:%m-%d %H:%M} -> {items[-1].date_end:%m-%d %H:%M} UTC)")
+    if windowed_out:
+        emit(f"window filter skipped {len(windowed_out)} fragmented node(s) "
+             f"(>{min_cont_s / 3600:.0f}h continuous or <{max_gap_s / 3600:.0f}h gaps to keep); "
+             f"add --include-small-window to reserve them anyway")
 
     # 2b) auto-extend the milestone/deadline to cover the furthest reservation end
     # (milestone must be >= every date_end). Keeps it at the most-future date needed.

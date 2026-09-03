@@ -59,9 +59,26 @@ python cli.py runs                   # list past run summaries
 
 Shared flags on `plan` / `run` (and where noted): `--pool <id>` (repeatable, restrict pools),
 `--node <name>` (repeatable, restrict to specific nodes — short name or full hostname),
-`--no-probe` (skip the SSH health probe), `--yes` (skip the confirm prompt), `-v` (live
-progress). `run`/`cancel-unhealthy`/`cancel-small-gpu`/`sync-users` are **dry-run** until
-you add `--commit`.
+`--no-probe` (skip the SSH health probe), `--include-small-window` (also reserve fragmented
+nodes — see below), `--yes` (skip the confirm prompt), `-v` (live progress).
+`run`/`cancel-unhealthy`/`cancel-small-gpu`/`sync-users` are **dry-run** until you add
+`--commit`.
+
+### Skip fragmented nodes (window filter)
+
+With a large team you accumulate a lot of small, scattered reservations. By default `plan`
+and `run` **keep only nodes worth holding**: a node is reserved only if our **total hold**
+(existing reservations + the blocks this run would add) gives either
+
+- one **continuous stretch longer than `policy.min_continuous_hours`** (default 24h), **or**
+- **inter-block gaps all shorter than `policy.max_gap_hours`** (default 12h) — i.e. between
+  any two adjacent blocks we hold, we're only out of the node for under 12h.
+
+A node that only yields short slivers separated by long gaps is skipped. The lead time before
+our first block doesn't count as a gap, and a single unbroken block always passes. Naming
+nodes with `--node`, or passing `--include-small-window`, bypasses the filter and reserves the
+fragmented nodes too (`allow --commit` also bypasses it, since its job is to re-book a node to
+re-test it). Tune the thresholds under `policy` in `config.yaml`.
 
 ### Node health
 
@@ -153,6 +170,8 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `policy.min_reservation_minutes` | skip free gaps shorter than this |
 | `policy.start_lead_minutes` | never start earlier than now + this |
 | `policy.min_gpus` | exclude nodes with fewer than this many GPUs |
+| `policy.min_continuous_hours` | window filter: keep a node if our total hold gives a continuous stretch longer than this (default 24) |
+| `policy.max_gap_hours` | window filter: else keep it if every gap between adjacent blocks we hold is under this (default 12) |
 | `ssh_user` | username the health probe logs in as (also used in printed `ssh` commands) |
 | `health_probe.enabled` | run the SSH health probe at all (`false` = Conductor's scraped data only) |
 | `health_probe.user` / `key` | login user (defaults to `ssh_user`) and private key to authenticate with |
@@ -176,6 +195,9 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
   **ending by `now + pool.furthest_future`** (a hard server cap on `date_end`), rounded to
   10-minute marks. Pools that cap at 48h yield ~one block ending at the 48h mark; pools with
   no limit chain out to `policy.default_horizon_days`.
+- **Window filter (default on):** after planning a node, drop it unless our total hold
+  (existing + planned) clears `min_continuous_hours` continuous **or** keeps inter-block gaps
+  under `max_gap_hours`. Bypass with `--include-small-window` or an explicit `--node`.
 - **Commit:** creates each reservation individually via the SDK; a `422 overlaps` means the
   slot is already taken (never double-booked), any other error is reported per node.
 

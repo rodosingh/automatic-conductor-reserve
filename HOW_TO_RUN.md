@@ -18,6 +18,7 @@ python cli.py plan          # add -v for live progress
 
 # 3) COMMIT — actually create the reservations (asks you to type 'yes')
 python cli.py run --commit
+python cli.py run --commit --include-small-window   # ALSO reserve fragmented nodes (see below)
 
 # past runs
 python cli.py runs
@@ -58,6 +59,18 @@ python cli.py allow <node> --commit       # re-enable AND reserve it, so `verify
 `python cli.py run --commit --node <name>` (the exact line is printed under "Reserve one").
 `--node` matches by short name or full hostname and works with `plan` (dry-run) too.
 
+**Only worthwhile nodes are reserved (window filter, on by default).** A large team piles up
+a lot of small, scattered reservations, so `plan`/`run` skip fragmented nodes: a node is kept
+only if our **total hold** (existing reservations + the blocks this run would add) gives one
+**continuous stretch over `policy.min_continuous_hours`** (default 24h), *or* leaves
+**inter-block gaps all under `policy.max_gap_hours`** (default 12h) — between any two adjacent
+blocks we hold, we're out of the node for under 12h. The wait before our first block isn't a
+gap, and a single unbroken block always passes. Nodes that only offer short slivers split by
+long gaps are dropped (the skip reason is printed). Pass `--include-small-window` (or the web
+**include small-window nodes** checkbox) to reserve those too; an explicit `--node` and
+`allow --commit` bypass the filter as well. Tune the two thresholds under `policy` in
+`config.yaml`.
+
 ### What "healthy" means
 
 `status`, `plan` and `run` all SSH into each candidate node and check three things. A node is
@@ -90,7 +103,7 @@ A failure is classified, and only some classes disqualify a node:
 This is the single most important thing to understand about the probe. On much of this
 fleet you can only log into a node **while one of your reservations on it is active**.
 
-Measured directly: `banff-ccs-aus-g04-05` and `dell300x-ccs-aus-f03-19` both logged in fine
+Measured directly: two nodes (one from each of two pools) both logged in fine
 while we held them (revealing `0 GPUs` and `no rocm-smi` respectively). We released those
 reservations, re-probed minutes later, and both returned `permission denied`. Same key, same
 machine, same network — the only thing that changed was that we no longer held them.
@@ -172,6 +185,7 @@ line (user from `--ssh-user` or `ssh_user`) so you can eyeball the GPUs live you
 | `--pool <id>` | restrict the run to one pool id (repeatable). Default = all pools in `config.yaml`. |
 | `--node <name>` | restrict to specific node name(s)/hostname(s) (repeatable) — reserve a single node picked from `status`. |
 | `--no-probe` | skip the SSH health probe. Faster, but reserves without verifying login / rocm-smi / docker. |
+| `--include-small-window` | (`plan`/`run`) also reserve fragmented nodes the window filter would skip. |
 | `--yes` | skip the interactive "type yes" prompt (for scripts / non-interactive shells). |
 | `-v` | live progress lines (includes per-node probe results). |
 

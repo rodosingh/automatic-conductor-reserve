@@ -32,11 +32,16 @@ def main(argv=None) -> int:
                         help="skip the SSH health probe (faster, but reserves without "
                              "verifying login / rocm-smi / docker)")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("plan", parents=[common], help="dry-run: show the plan, create nothing")
+    swindow_help = ("also reserve fragmented nodes (default: keep only nodes whose total hold "
+                    "gives >policy.min_continuous_hours continuous or <policy.max_gap_hours "
+                    "inter-block gaps)")
+    p = sub.add_parser("plan", parents=[common], help="dry-run: show the plan, create nothing")
+    p.add_argument("--include-small-window", action="store_true", help=swindow_help)
     r = sub.add_parser("run", parents=[common],
                        help="build the plan and (with --commit) create reservations")
     r.add_argument("--commit", action="store_true", help="actually create reservations")
     r.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    r.add_argument("--include-small-window", action="store_true", help=swindow_help)
     sub.add_parser("whoami", parents=[common], help="verify authentication and list your teams")
     sub.add_parser("runs", parents=[common], help="list past run summaries")
     sub.add_parser("denylist", parents=[common],
@@ -145,8 +150,11 @@ def main(argv=None) -> int:
             print("aborted.")
             return 1
 
+    # The window filter is the default; naming nodes explicitly (--node) or opting in with
+    # --include-small-window bypasses it — in both cases you clearly want those nodes.
+    filter_windows = not getattr(args, "include_small_window", False) and not getattr(args, "node", None)
     result = run(cfg, commit=commit, node_names=getattr(args, "node", None),
-                 probe_health=not args.no_probe,
+                 probe_health=not args.no_probe, filter_windows=filter_windows,
                  progress=lambda m: print("·", m) if args.verbose else None)
     print()
     print(notify.format_console(result))
@@ -404,7 +412,10 @@ def _allow(args) -> int:
         if input(">>> Type 'yes' to proceed: ").strip().lower() != "yes":
             print("aborted (nodes stay removed from the denylist; nothing was reserved).")
             return 1
+    # No window filter here: the whole point is to re-book a specific node to re-test it,
+    # so we reserve it regardless of how fragmented its window looks.
     result = run(cfg, commit=commit, node_names=args.nodes, probe_health=False,
+                 filter_windows=False,
                  progress=lambda m: print("·", m) if args.verbose else None)
     print()
     print(notify.format_console(result))
