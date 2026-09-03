@@ -421,6 +421,8 @@
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
       Adds the config's default users to every ongoing + upcoming reservation titled
       "{{ config.title }}". Additive only (mode <code>add</code>) — never removes anyone; idempotent.
+      <br><b>New teammate?</b> Add their AMD email to <code>reservation.users</code> in
+      <code>config.yaml</code>, then click below (new runs include them automatically).
     </div>
     <div class="row">
       <form action="{{ url_for('sync_users_route') }}" method="post">
