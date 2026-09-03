@@ -56,6 +56,7 @@ python cli.py cancel-small-window    # cancel our reservations on fragmented (sm
 python cli.py denylist               # show confirmed-bad nodes that run/plan now skip
 python cli.py allow N                # re-enable a denylisted node (add --commit to also re-reserve it)
 python cli.py sync-users             # add config's default users to existing reservations
+python cli.py add-user EMAIL         # add ONE person (need not be in config) to our reservations; scope with --node
 python cli.py runs                   # list past run summaries
 ```
 
@@ -200,8 +201,8 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 
 ### Adding a teammate
 
-Users live in `reservation.users` in `config.yaml` — there is no "add user" command that
-takes a name inline. To add someone:
+The permanent team lives in `reservation.users` in `config.yaml` (everyone there is added to
+every reservation). To add a **permanent** teammate:
 
 1. Add their identifier to the list (an **AMD email** is easiest; NTID, `"Last, First"`, or UUID
    also resolve). You're always auto-included, so don't list yourself.
@@ -219,7 +220,17 @@ takes a name inline. To add someone:
    - **Existing** (ongoing + upcoming) reservations: `python cli.py sync-users --commit` adds
      them to every reservation with our title (additive — it never removes anyone).
 
-There is no per-single-reservation add; `sync-users` is all-or-nothing across our reservations.
+**One-off / per-node add.** To add a single person **without** putting them in `config.yaml` —
+e.g. just on the node(s) they need — use `add-user` (dry-run by default; `--commit` to write):
+
+```bash
+python cli.py add-user user@amd.com                     # our reservations on every node
+python cli.py add-user user@amd.com --node smci350-...  # scope to node(s); --node repeatable
+python cli.py add-user user@amd.com --node N --commit   # actually add (mode 'add')
+```
+
+`sync-users` is all-or-nothing across our reservations for the config's default users; `add-user`
+adds one arbitrary person, scoped by `--node`/`--pool`. Both are additive — neither removes anyone.
 
 ## How eligibility & scheduling work
 

@@ -500,6 +500,66 @@ def cancel_small_window(config: dict, *, commit: bool = False,
             "found": found, "cancelled": cancelled, "committed": bool(commit)}
 
 
+def add_user(config: dict, *, user: str, node_names: Optional[list] = None,
+             commit: bool = False, client: Optional[ConductorClient] = None,
+             progress=None) -> dict:
+    """Add ONE person to OUR reservations, optionally scoped to specific node(s).
+
+    `user` is any identifier resolve_users accepts (email / NTID / "Last, First" / UUID).
+    `node_names` (short name or full hostname, domain-insensitive) restricts to reservations on
+    those nodes; omit to touch every reservation under our title. `--pool` is applied upstream
+    by filtering config['pools']. Additive (mode='add') and idempotent — never removes anyone.
+    Dry-run by default; commit=True actually writes.
+    """
+    def emit(msg: str):
+        LOG.info(msg)
+        if progress:
+            progress(msg)
+
+    client = client or ConductorClient()
+    title = config["reservation"]["title"]
+    user_ids, unresolved = client.resolve_users([user])
+    if unresolved or not user_ids:
+        emit(f"could not resolve user {user!r} — nothing to do")
+        return {"user": user, "user_id": None, "unresolved": [user], "title": title,
+                "nodes": [], "found": [], "updated": [], "failed": [], "committed": bool(commit)}
+    user_id = user_ids[0]
+
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    if node_names:
+        want = {_norm(x) for x in node_names}
+        pairs = [(n, p) for (n, p) in pairs if _norm(n.name) in want]
+        missing = want - {_norm(n.name) for n, _ in pairs}
+        if missing:
+            emit(f"WARNING: node(s) not eligible/found: {', '.join(sorted(missing))}")
+    node_by_id = {n.id: n for n, _ in pairs}
+
+    all_ours = client.find_our_reservations([n.id for n, _ in pairs], set(), {title})
+    found, by_node = [], {}
+    for r in all_ours:
+        nid = str(r["node_id"])
+        node = node_by_id.get(nid)
+        name = node.name if node else nid
+        by_node[name] = by_node.get(name, 0) + 1
+        found.append({"id": r["id"], "node_id": nid, "node_name": name,
+                      "date_start": str(r.get("date_start")), "date_end": str(r.get("date_end"))})
+    nodes = [{"name": n, "count": c} for n, c in sorted(by_node.items())]
+    emit(f"user {user!r} -> {len(found)} reservation(s) on {len(nodes)} node(s)")
+
+    updated, failed = [], []
+    if commit:
+        for r in found:
+            try:
+                client.add_users_to_reservation(r["id"], [user_id])
+                updated.append(r["id"])
+            except Exception as e:  # noqa: BLE001
+                failed.append({"id": r["id"], "message": _short(str(e))})
+        emit(f"added user to {len(updated)}/{len(found)} reservation(s)")
+    return {"user": user, "user_id": user_id, "unresolved": [], "title": title,
+            "nodes": nodes, "found": found, "updated": updated, "failed": failed,
+            "committed": bool(commit)}
+
+
 def verify_held(config: dict, *, client: Optional[ConductorClient] = None,
                 progress=None) -> dict:
     """Probe only the nodes we hold an ACTIVE reservation on right now.

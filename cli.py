@@ -72,6 +72,11 @@ def main(argv=None) -> int:
                         help="add config's default users to our existing (ongoing+upcoming) reservations")
     su.add_argument("--commit", action="store_true", help="actually update (default: dry-run)")
     su.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
+    au = sub.add_parser("add-user", parents=[common],
+                        help="add ONE person to our reservations (scope with --node / --pool)")
+    au.add_argument("user", metavar="USER", help="email / NTID / \"Last, First\" / UUID to add")
+    au.add_argument("--commit", action="store_true", help="actually add (default: dry-run)")
+    au.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     st = sub.add_parser("status", parents=[common],
                         help="report which nodes are free & healthy, and why the rest are not")
     st.add_argument("--free", action="store_true", help="show only free & healthy nodes")
@@ -140,6 +145,9 @@ def main(argv=None) -> int:
 
     if args.cmd == "sync-users":
         return _sync_users(args)
+
+    if args.cmd == "add-user":
+        return _add_user(args)
 
     if args.cmd == "status":
         return _status(args)
@@ -554,6 +562,41 @@ def _sync_users(args) -> int:
     fail = [x for x in out["reservations"] if x["status"] == "failed"]
     print(f"updated {ok}/{len(out['reservations'])} reservation(s)")
     for x in fail[:10]:
+        print(f"  FAILED {x['id']}: {x['message']}")
+    return 0
+
+
+def _add_user(args) -> int:
+    """Add ONE person to our reservations, scoped by --node / --pool (default: all)."""
+    from conductor_reserve.engine import add_user
+    cfg = load_config()
+    if getattr(args, "pool", None):
+        cfg = _filter_pools(cfg, args.pool)
+    nodes = getattr(args, "node", None)
+    res = add_user(cfg, user=args.user, node_names=nodes, commit=False)  # find only
+    if res["unresolved"]:
+        print(f"could not resolve user {args.user!r} — check the email / NTID / name.")
+        return 1
+    scope = ("nodes " + ", ".join(nodes)) if nodes else "ALL our reservations"
+    print(f"add {res['user']!r} to reservations titled {res['title']!r} on {scope}: "
+          f"{len(res['found'])} reservation(s) on {len(res['nodes'])} node(s)")
+    for n in res["nodes"]:
+        print(f"  {n['name'][:32]:32} {n['count']} resv")
+    if not res["found"]:
+        print("\nno matching reservations — nothing to do.")
+        return 0
+    if not args.commit:
+        print("\n(dry-run) re-run with --commit to add the user to these.")
+        return 0
+    if not args.yes and input(
+            f"\nAdd {res['user']!r} to these {len(res['found'])} reservation(s)? Type 'yes': "
+            ).strip().lower() != "yes":
+        print("aborted.")
+        return 1
+    out = add_user(cfg, user=args.user, node_names=nodes, commit=True,
+                   progress=lambda m: print("·", m) if args.verbose else None)
+    print(f"added user to {len(out['updated'])}/{len(out['found'])} reservation(s)")
+    for x in out["failed"][:10]:
         print(f"  FAILED {x['id']}: {x['message']}")
     return 0
 

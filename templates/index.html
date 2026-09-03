@@ -459,6 +459,51 @@
   </div>
 
   <div class="card">
+    <div class="kv"><b>Add one person to our reservations (scoped by node)</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Adds a <b>single</b> person — by AMD email, "Last, First", or user UUID — to our
+      "{{ config.title }}" reservations. They need <b>not</b> be in <code>config.yaml</code>.
+      Leave the node box empty to add them on <b>every</b> node we hold, or name one or more nodes
+      to scope it. Additive only — never removes anyone. Mirrors <code>python cli.py add-user</code>.
+    </div>
+    <form action="{{ url_for('add_user_route') }}" method="post" onsubmit="return this.confirm.checked ? confirm('Add this person to our matching reservations?') : true;">
+      <input type="text" name="user" placeholder="email / Last, First / UUID"
+             style="padding:6px;border:1px solid #ccc;border-radius:4px;width:220px" required>
+      <input type="text" name="nodes" placeholder="node name(s), space/comma sep — blank = all"
+             style="padding:6px;border:1px solid #ccc;border-radius:4px;width:260px">
+      <div class="row" style="margin-top:8px">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> add user (leave off for dry-run find)</label>
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find / ➕ Add</button>
+      </div>
+    </form>
+    {% if add_user %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ add_user.user }}
+          {% if add_user.user_id %}→ {{ add_user.found|length }} reservation(s) on {{ add_user.nodes|length }} node(s){% if add_user.committed %} — updated {{ add_user.updated|length }}{% endif %}
+          {% else %}<span class="pill failed" style="margin-left:8px">unresolved</span>{% endif %}</b>
+        </div>
+        {% if add_user.nodes %}
+        <div class="mut" style="font-size:12px;margin-top:4px">
+          {% for n in add_user.nodes %}{{ n.name }} ({{ n.count }}){% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        {% if add_user.found %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Start</th><th>End</th><th>ID</th></tr></thead>
+          <tbody>
+          {% for r in add_user.found[:60] %}
+            <tr><td>{{ r.node_name }}</td><td>{{ r.date_start[:16] }}</td>
+                <td>{{ r.date_end[:16] }}</td><td class="mut">{{ r.id }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if add_user.failed %}<div class="mut" style="font-size:12px;margin-top:6px;color:#b00">failed on {{ add_user.failed|length }}: {% for f in add_user.failed %}{{ f.id }} ({{ f.message }}){% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+        {% elif add_user.user_id %}<div class="mut" style="font-size:13px;margin-top:6px">No matching reservations of ours on those node(s).</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <div class="kv"><b>My reservations</b></div>
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
       Nodes YOU have reserved (ongoing + upcoming) across the configured pools — your combined
