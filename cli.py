@@ -74,6 +74,8 @@ def main(argv=None) -> int:
                     help="show only unhealthy nodes, with the reason each one failed")
     st.add_argument("--reserved", action="store_true",
                     help="show only currently-reserved nodes, with who holds them and until when")
+    st.add_argument("--continuous", action="store_true",
+                    help="only nodes you hold ACTIVE now with gap-free coverage into the future")
     st.add_argument("--fast", action="store_true", help="skip the reservation check (health only)")
     st.add_argument("--ssh-user", default=None, help="username for the printed rocm-smi ssh command")
     args = parser.parse_args(argv)
@@ -201,17 +203,36 @@ def _status(args) -> int:
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
     ssh_user = args.ssh_user or cfg.get("ssh_user") or os.getenv("USER") or "<your-ntid>"
-    if args.reserved and args.fast:
-        print("--reserved needs the reservation check; ignoring --fast.")
+    if (args.reserved or args.continuous) and args.fast:
+        print("--reserved/--continuous need the reservation check; ignoring --fast.")
         args.fast = False
-    # For "reserved by me" show the full future holdings, not just the next 48h.
+    # For "reserved by me" / "continuous" show the full future holdings, not just the next 48h.
     window_hours = 48
-    if args.reserved:
+    if args.reserved or args.continuous:
         window_hours = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
     rows = status_report(cfg, check_reservations=not args.fast, window_hours=window_hours,
                          probe_health=not args.no_probe,
                          progress=lambda m: print("·", m) if args.verbose else None)
     unhealthy = [r for r in rows if not r["healthy"]]
+
+    if args.continuous:
+        held = [r for r in rows if r.get("held_now") and r.get("held_continuous")]
+        gappy = [r for r in rows if r.get("held_now") and not r.get("held_continuous")]
+        print(f"{'node':26} {'pool':20} {'gpu':>6} {'health':9} "
+              f"{'continuous until (UTC)':22} {'#':>2}")
+        print("-" * 92)
+        for r in sorted(held, key=lambda r: (r.get("held_until") or "", r["name"])):
+            until = (r.get("held_until") or "")[5:16]
+            print(f"{r['name'][:26]:26} {r['pool'][:20]:20} {_gpu_cell(r):>6} "
+                  f"{('OK' if r['healthy'] else 'UNHEALTHY'):9} {until:22} {len(r['mine']):>2}")
+        print(f"\n{len(held)} node(s) held ACTIVE now with gap-free coverage into the future.")
+        if gappy:
+            print(f"\n{len(gappy)} node(s) active now but with a GAP ahead (excluded — our hold "
+                  f"lapses then resumes):")
+            for r in sorted(gappy, key=lambda r: r["name"]):
+                print(f"  {r['name'][:26]:26} held until {(r.get('held_until') or '')[5:16]}, "
+                      f"then a later block")
+        return 0
 
     if args.reserved:
         # nodes YOU have reserved (ongoing + upcoming)

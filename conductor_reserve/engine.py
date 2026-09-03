@@ -547,6 +547,8 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
         h["free_at"] = None
         h["reserved_by_me"] = False
         h["held_now"] = False
+        h["held_continuous"] = False
+        h["held_until"] = None
         h["mine"] = []
         if check_reservations:
             resv = client.reservations_window(h["id"], now, now + timedelta(hours=window_hours))
@@ -565,7 +567,15 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
             if mine:
                 mine.sort(key=lambda r: r["date_start"])
                 h["reserved_by_me"] = True
-                h["held_now"] = any(r["date_start"] <= now < r["date_end"] for r in mine)
+                # Merge OUR blocks only: back-to-back reservations (block.end == next.start)
+                # merge into one interval; a gap in our own coverage stays separate. So the
+                # merged run covering `now` reaching our furthest end == we never lapse ahead.
+                mine_iv = _merge_iv([(r["date_start"], r["date_end"]) for r in mine])
+                active_run = next((iv for iv in mine_iv if iv[0] <= now < iv[1]), None)
+                h["held_now"] = active_run is not None
+                if active_run is not None:
+                    h["held_continuous"] = active_run[1] >= max(iv[1] for iv in mine_iv)
+                    h["held_until"] = active_run[1].isoformat()
                 h["mine"] = [{"title": r["title"],
                               "date_start": r["date_start"].isoformat(),
                               "date_end": r["date_end"].isoformat(),
