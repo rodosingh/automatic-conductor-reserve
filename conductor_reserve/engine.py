@@ -5,6 +5,7 @@ Dry-run is the default everywhere. `commit=True` is the only path that writes.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -907,6 +908,16 @@ def _short(msg: str) -> str:
     """Trim a server error to the informative part."""
     if "::" in msg:
         msg = msg.split("::", 1)[1]
+    # Server errors arrive as `Route: <url>\n{"message": "...", "status_code": N}`.
+    # Surface the human-readable message (with its code) instead of the URL, and drop the
+    # noisy "entity with ID: <uuid>" preamble — e.g. a block_api_access pool now reads
+    # "406: The pool of this entity does not allow reservation requests via API tokens."
+    m = re.search(r'"message"\s*:\s*"(.*?)"', msg, re.S)
+    if m:
+        text = re.sub(r"Cannot create a reservation for entity with ID: [\w-]+\.\s*", "",
+                      m.group(1))
+        code = re.search(r'"status_code"\s*:\s*(\d+)', msg)
+        msg = f"{code.group(1)}: {text}" if code else text
     return msg.strip()[:160]
 
 
