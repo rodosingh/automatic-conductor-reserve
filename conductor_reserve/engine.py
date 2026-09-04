@@ -59,12 +59,18 @@ def _window_quality(coverage, min_cont_s: float, max_gap_s: float):
     return keep, longest, biggest_gap
 
 
-def _enumerate_nodes(client: ConductorClient, config: dict, emit):
+def _enumerate_nodes(client: ConductorClient, config: dict, emit, *,
+                     include_ineligible: bool = False):
     """Every configured pool's systems, with each pool's `only_nodes` filter applied.
 
     Returns (pairs, pools, nodes, errors); `pairs` are the (node, pool) tuples that pass
     Conductor-side eligibility. Shared by `run` and `cancel_unhealthy` so both see exactly
     the same node set.
+
+    `include_ineligible=True` keeps every node in `pairs` regardless of reserve-eligibility
+    (pool block_api_access, archived, sub-min_gpus). Reserve-eligibility says whether we could
+    make a NEW reservation now; it is irrelevant to nodes we already HOLD — so `verify_held`,
+    which judges held nodes, must not filter by it.
     """
     min_gpus = int(config.get("policy", {}).get("min_gpus", 2))
     pairs, pools, all_nodes, errors = [], [], [], []
@@ -88,7 +94,7 @@ def _enumerate_nodes(client: ConductorClient, config: dict, emit):
             nodes = selected
 
         all_nodes.extend(nodes)
-        pairs.extend((n, pool) for n in nodes if n.eligible)
+        pairs.extend((n, pool) for n in nodes if include_ineligible or n.eligible)
         emit(f"  {sum(1 for n in nodes if n.eligible)}/{len(nodes)} systems eligible")
     return pairs, pools, all_nodes, errors
 
@@ -625,7 +631,9 @@ def verify_held(config: dict, *, client: Optional[ConductorClient] = None,
     client = client or ConductorClient()
     title = config["reservation"]["title"]
     now = datetime.now(timezone.utc)
-    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    # Judge nodes we HOLD, so ignore reserve-eligibility (a pool in block_api_access mode is
+    # ineligible for NEW reservations but we still hold — and must be able to probe — its nodes).
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit, include_ineligible=True)
     node_by_id = {n.id: (n, p) for n, p in pairs}
 
     found = client.find_our_reservations([n.id for n, _ in pairs], set(), {title})
