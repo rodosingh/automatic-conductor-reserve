@@ -183,6 +183,25 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
         result.errors.append("could not resolve users: " + ", ".join(unresolved))
         emit("WARNING: unresolved users skipped: " + ", ".join(unresolved))
 
+    # Per-node extra users (from `add-user --future`, stored in config's node_users map). Resolve
+    # each identifier once here; injected into the matching node's user list at plan time below.
+    extra_ids_by_node: dict[str, list] = {}
+    node_users_map = config.get("node_users") or {}
+    if node_users_map:
+        ident_to_id: dict[str, str] = {}
+        for idents in node_users_map.values():
+            for ident in idents:
+                if ident not in ident_to_id:
+                    rids, _ = client.resolve_users([ident])
+                    if rids:
+                        ident_to_id[ident] = rids[0]
+                    else:
+                        emit(f"WARNING: node_users entry {ident!r} did not resolve — skipped")
+        for nkey, idents in node_users_map.items():
+            ids = [ident_to_id[i] for i in idents if i in ident_to_id]
+            if ids:
+                extra_ids_by_node[_norm(nkey)] = ids
+
     reservation_defaults = {
         "title": res_cfg["title"],
         "project": res_cfg["project"],
@@ -253,10 +272,15 @@ def run(config: dict, *, commit: bool = False, client: Optional[ConductorClient]
     emit(f"planning across {len(eligible_nodes)} eligible node(s)...")
     windowed_out: list[str] = []
     for node, pool in eligible_nodes:
+        rd = {**reservation_defaults}
+        extra = extra_ids_by_node.get(_norm(node.name))
+        if extra:
+            rd["user_ids"] = list(dict.fromkeys(rd["user_ids"] + extra))
+            emit(f"  {node.name}: +{len(extra)} node-specific user(s) (node_users)")
         try:
             items = scheduler.plan_node(
                 client, node, pool,
-                reservation_defaults={**reservation_defaults},
+                reservation_defaults=rd,
                 policy=policy, now=result.started_at,
             )
         except Exception as e:  # noqa: BLE001
@@ -501,8 +525,8 @@ def cancel_small_window(config: dict, *, commit: bool = False,
 
 
 def add_user(config: dict, *, user: str, node_names: Optional[list] = None,
-             commit: bool = False, client: Optional[ConductorClient] = None,
-             progress=None) -> dict:
+             commit: bool = False, future: bool = False,
+             client: Optional[ConductorClient] = None, progress=None) -> dict:
     """Add ONE person to OUR reservations, optionally scoped to specific node(s).
 
     `user` is any identifier resolve_users accepts (email / NTID / "Last, First" / UUID).
@@ -510,6 +534,10 @@ def add_user(config: dict, *, user: str, node_names: Optional[list] = None,
     those nodes; omit to touch every reservation under our title. `--pool` is applied upstream
     by filtering config['pools']. Additive (mode='add') and idempotent — never removes anyone.
     Dry-run by default; commit=True actually writes.
+
+    `future` (requires node_names): also persist the person under node_users[node] in config.yaml
+    so reservations created by *later* runs on those node(s) include them too. Only writes on
+    commit; dry-run just reports which nodes would be persisted (`persist_nodes`).
     """
     def emit(msg: str):
         LOG.info(msg)
@@ -522,7 +550,8 @@ def add_user(config: dict, *, user: str, node_names: Optional[list] = None,
     if unresolved or not user_ids:
         emit(f"could not resolve user {user!r} — nothing to do")
         return {"user": user, "user_id": None, "unresolved": [user], "title": title,
-                "nodes": [], "found": [], "updated": [], "failed": [], "committed": bool(commit)}
+                "nodes": [], "found": [], "updated": [], "failed": [],
+                "persist_nodes": [], "persisted": [], "committed": bool(commit)}
     user_id = user_ids[0]
 
     pairs, _, _, _ = _enumerate_nodes(client, config, emit)
@@ -555,9 +584,24 @@ def add_user(config: dict, *, user: str, node_names: Optional[list] = None,
             except Exception as e:  # noqa: BLE001
                 failed.append({"id": r["id"], "message": _short(str(e))})
         emit(f"added user to {len(updated)}/{len(found)} reservation(s)")
+
+    # `--future`: persist the person for the matched node(s) so LATER runs include them too.
+    persist_nodes, persisted = [], []
+    if future:
+        if not node_names:
+            emit("WARNING: --future needs --node — skipping persistence for future runs")
+        else:
+            persist_nodes = sorted({_norm(n.name) for n, _ in pairs})
+            if commit:
+                from . import config as config_mod
+                for nkey in persist_nodes:
+                    if config_mod.add_node_user(nkey, user):
+                        persisted.append(nkey)
+                emit(f"persisted {user!r} in config.yaml node_users for {len(persist_nodes)} "
+                     f"node(s) — future runs on them will include this user")
     return {"user": user, "user_id": user_id, "unresolved": [], "title": title,
             "nodes": nodes, "found": found, "updated": updated, "failed": failed,
-            "committed": bool(commit)}
+            "persist_nodes": persist_nodes, "persisted": persisted, "committed": bool(commit)}
 
 
 def verify_held(config: dict, *, client: Optional[ConductorClient] = None,

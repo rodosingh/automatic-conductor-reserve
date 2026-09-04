@@ -16,7 +16,7 @@ Already done on this machine, but for reference:
 
 ```bash
 # SDK (into base conda):
-pip install conductor_sdk flask pyyaml \
+pip install conductor_sdk flask pyyaml ruamel.yaml \
   --index-url https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple \
   --extra-index-url https://pypi.org/simple \
   --trusted-host mkmartifactory.amd.com
@@ -229,8 +229,18 @@ python cli.py add-user user@amd.com --node smci350-...  # scope to node(s); --no
 python cli.py add-user user@amd.com --node N --commit   # actually add (mode 'add')
 ```
 
+By default `add-user` only touches reservations that **exist now** (active + already-created
+upcoming). To also include the person on reservations that **future runs** create on a node, add
+`--future` (requires `--node`): it persists them under `node_users` in `config.yaml`, and every
+later `run` unions those users into that node's new reservations.
+
+```bash
+python cli.py add-user user@amd.com --node N --future --commit   # current + all future runs on N
+```
+
 `sync-users` is all-or-nothing across our reservations for the config's default users; `add-user`
-adds one arbitrary person, scoped by `--node`/`--pool`. Both are additive — neither removes anyone.
+adds one arbitrary person, scoped by `--node`/`--pool` (and, with `--future`, persistently). All
+are additive — none remove anyone.
 
 ## How eligibility & scheduling work
 

@@ -76,6 +76,9 @@ def main(argv=None) -> int:
                         help="add ONE person to our reservations (scope with --node / --pool)")
     au.add_argument("user", metavar="USER", help="email / NTID / \"Last, First\" / UUID to add")
     au.add_argument("--commit", action="store_true", help="actually add (default: dry-run)")
+    au.add_argument("--future", action="store_true",
+                    help="also persist the user for the --node(s) in config.yaml, so reservations "
+                         "created by LATER runs on them include this user too (requires --node)")
     au.add_argument("--yes", action="store_true", help="skip the interactive confirmation prompt")
     st = sub.add_parser("status", parents=[common],
                         help="report which nodes are free & healthy, and why the rest are not")
@@ -573,7 +576,10 @@ def _add_user(args) -> int:
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
     nodes = getattr(args, "node", None)
-    res = add_user(cfg, user=args.user, node_names=nodes, commit=False)  # find only
+    if args.future and not nodes:
+        print("--future needs --node (it persists per-node); nothing to persist for ALL nodes.")
+        return 1
+    res = add_user(cfg, user=args.user, node_names=nodes, future=args.future, commit=False)
     if res["unresolved"]:
         print(f"could not resolve user {args.user!r} — check the email / NTID / name.")
         return 1
@@ -582,20 +588,28 @@ def _add_user(args) -> int:
           f"{len(res['found'])} reservation(s) on {len(res['nodes'])} node(s)")
     for n in res["nodes"]:
         print(f"  {n['name'][:32]:32} {n['count']} resv")
-    if not res["found"]:
+    if args.future:
+        print(f"  --future: will persist for {len(res['persist_nodes'])} node(s) "
+              f"({', '.join(res['persist_nodes']) or 'none matched'}) so later runs include them")
+    # With --future there's still work (persistence) even if no current reservations match.
+    if not res["found"] and not (args.future and res["persist_nodes"]):
         print("\nno matching reservations — nothing to do.")
         return 0
     if not args.commit:
-        print("\n(dry-run) re-run with --commit to add the user to these.")
+        print("\n(dry-run) re-run with --commit to apply.")
         return 0
-    if not args.yes and input(
-            f"\nAdd {res['user']!r} to these {len(res['found'])} reservation(s)? Type 'yes': "
-            ).strip().lower() != "yes":
+    n_now = len(res["found"])
+    prompt = f"\nAdd {res['user']!r} to {n_now} current reservation(s)"
+    if args.future:
+        prompt += f" and persist for {len(res['persist_nodes'])} node(s) (future runs)"
+    if not args.yes and input(prompt + "? Type 'yes': ").strip().lower() != "yes":
         print("aborted.")
         return 1
-    out = add_user(cfg, user=args.user, node_names=nodes, commit=True,
+    out = add_user(cfg, user=args.user, node_names=nodes, future=args.future, commit=True,
                    progress=lambda m: print("·", m) if args.verbose else None)
     print(f"added user to {len(out['updated'])}/{len(out['found'])} reservation(s)")
+    if args.future:
+        print(f"persisted for {len(out['persisted'])} node(s) in config.yaml (future runs)")
     for x in out["failed"][:10]:
         print(f"  FAILED {x['id']}: {x['message']}")
     return 0
