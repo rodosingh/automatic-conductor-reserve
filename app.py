@@ -65,13 +65,13 @@ def _do_sync(commit: bool):
         _last["running"] = False
 
 
-def _do_add_user(user: str, nodes: list, commit: bool):
+def _do_add_user(user: str, nodes: list, commit: bool, future: bool = False):
     cfg = load_config()
     _last["log"] = []
     _last["running"] = True
     try:
-        _last["add_user"] = add_user(cfg, user=user, node_names=nodes or None, commit=commit,
-                                     progress=lambda m: _last["log"].append(m))
+        _last["add_user"] = add_user(cfg, user=user, node_names=nodes or None, future=future,
+                                     commit=commit, progress=lambda m: _last["log"].append(m))
     finally:
         _last["running"] = False
 
@@ -243,9 +243,14 @@ def add_user_route():
     user = (request.form.get("user") or "").strip()
     nodes = (request.form.get("nodes") or "").replace(",", " ").split()
     do_commit = request.form.get("confirm") == "on"
+    future = request.form.get("future") == "on"
+    # --future is per-node: ignore it (with a note) if no node was named.
+    if future and not nodes:
+        _last["log"] = ["'future' needs at least one node — ignored (nothing to persist for ALL)."]
+        future = False
     if user and not _last["running"]:
         with _lock:
-            _do_add_user(user, nodes, commit=do_commit)
+            _do_add_user(user, nodes, commit=do_commit, future=future)
     return redirect(url_for("index"))
 
 

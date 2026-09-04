@@ -36,6 +36,9 @@ python cli.py add-user user@amd.com                       # dry-run: all our res
 python cli.py add-user user@amd.com --node smci350-...    # scope to node(s); --node is repeatable
 python cli.py add-user user@amd.com --node N --commit     # actually add (mode 'add'; asks 'yes')
 # accepts email / NTID / "Last, First" / UUID; --pool <id> also scopes; additive & idempotent
+# --future also persists them under node_users in config.yaml, so LATER runs on that node
+# include them too (only the CURRENT reservations are covered without it; requires --node):
+python cli.py add-user user@amd.com --node N --future --commit   # current + all future runs on N
 
 # 6) STATUS — which nodes are free & healthy, and WHY the rest are not (read-only)
 python cli.py status                      # table: gpu, docker, reserved, health/reason + an "UNHEALTHY" summary
@@ -247,7 +250,8 @@ python app.py               # open http://127.0.0.1:5057
   the box and **Add default users** to add the config's default users (mirrors `sync-users`).
 - **Add-user card** → type a person (email / "Last, First" / UUID — need not be in config) and,
   optionally, node name(s); leave the box unticked for a dry-run find, tick **add user** and
-  submit to add them. Blank node box = every node we hold (mirrors `add-user [--node …]`).
+  submit to add them. Blank node box = every node we hold (mirrors `add-user [--node …]`). Tick
+  **future** (with node(s) named) to also persist them for later runs (mirrors `--future`).
 - **My reservations card** → **Show my reservations** lists the nodes YOU have reserved
   (ongoing + upcoming) with your window, block count, active/upcoming, and each node's health
   (mirrors `status --reserved`).
@@ -309,7 +313,7 @@ cd ~
 cd automatic-conductor-reserve
 
 # 2) Install the SDK + web deps into their Python (base conda recommended)
-pip install conductor_sdk flask pyyaml \
+pip install conductor_sdk flask pyyaml ruamel.yaml \
   --index-url https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple \
   --extra-index-url https://pypi.org/simple \
   --trusted-host mkmartifactory.amd.com

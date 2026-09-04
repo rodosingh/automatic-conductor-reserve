@@ -465,6 +465,9 @@
       "{{ config.title }}" reservations. They need <b>not</b> be in <code>config.yaml</code>.
       Leave the node box empty to add them on <b>every</b> node we hold, or name one or more nodes
       to scope it. Additive only — never removes anyone. Mirrors <code>python cli.py add-user</code>.
+      <br><b>Also for future runs?</b> Tick <b>future</b> (with node(s) named) to persist them under
+      <code>node_users</code> in <code>config.yaml</code>, so reservations created by <i>later</i>
+      runs on those node(s) include them too.
     </div>
     <form action="{{ url_for('add_user_route') }}" method="post" onsubmit="return this.confirm.checked ? confirm('Add this person to our matching reservations?') : true;">
       <input type="text" name="user" placeholder="email / Last, First / UUID"
@@ -473,6 +476,7 @@
              style="padding:6px;border:1px solid #ccc;border-radius:4px;width:260px">
       <div class="row" style="margin-top:8px">
         <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> add user (leave off for dry-run find)</label>
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="future"> future (persist per-node)</label>
         <button class="btn btn-plan" {% if running %}disabled{% endif %}>🔍 Find / ➕ Add</button>
       </div>
     </form>
@@ -485,6 +489,12 @@
         {% if add_user.nodes %}
         <div class="mut" style="font-size:12px;margin-top:4px">
           {% for n in add_user.nodes %}{{ n.name }} ({{ n.count }}){% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        {% if add_user.persist_nodes %}
+        <div class="mut" style="font-size:12px;margin-top:4px">
+          future: {% if add_user.committed %}persisted{% else %}would persist{% endif %} for
+          {{ add_user.persist_nodes|length }} node(s) in <code>config.yaml</code> — later runs include them
         </div>
         {% endif %}
         {% if add_user.found %}

@@ -20,6 +20,14 @@ reservation:
     - "teammate1@amd.com"
     - "teammate2@amd.com"
 
+# Per-node extra users. These are added ON TOP of reservation.users, but ONLY for the named
+# node(s), on reservations created by `run`. Managed by `add-user EMAIL --node N --future`
+# (which appends here); you can also edit it by hand. Keys are the node's short name (domain
+# stripped). Entries may be email / "Last, First" / UUID. Omit the section if you have none.
+node_users: {}
+#   node-name-1:
+#     - "teammate1@amd.com"
+
 pools:
   - id: "<POOL_ID_1>"          # e.g. a shared MI300X pool
   - id: "<POOL_ID_2>"          # e.g. a shared MI350X pool
