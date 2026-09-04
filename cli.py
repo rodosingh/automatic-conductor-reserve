@@ -17,7 +17,7 @@ import sys
 from conductor_reserve import notify
 from conductor_reserve.config import load_config
 from conductor_reserve.conductor import ConductorClient
-from conductor_reserve.engine import run
+from conductor_reserve.engine import format_durations, run
 
 
 def main(argv=None) -> int:
@@ -266,29 +266,6 @@ def _gpu_cell(r: dict) -> str:
     return f"{r['gpu_detected']}/{r['gpu_expected']}"
 
 
-def _dur_cell(secs: float, prefix: str = "") -> str:
-    """Seconds -> compact HhMm (e.g. '25h', '2h20m', '45m'); minutes dropped when zero."""
-    mins = max(0, int(secs)) // 60
-    h, m = divmod(mins, 60)
-    s = f"{h}h{m}m" if h and m else (f"{h}h" if h else f"{m}m")
-    return prefix + s
-
-
-def _durations(mine: list, now) -> str:
-    """Per-reservation durations as a list. An ACTIVE block shows time LEFT (`+2h20m`);
-    an upcoming block shows its full length. Order matches `mine` (sorted by start)."""
-    from datetime import datetime
-    parts = []
-    for m in mine:
-        end = datetime.fromisoformat(m["date_end"])
-        if m["active"]:
-            parts.append(_dur_cell((end - now).total_seconds(), "+"))
-        else:
-            start = datetime.fromisoformat(m["date_start"])
-            parts.append(_dur_cell((end - start).total_seconds()))
-    return "[" + ", ".join(parts) + "]"
-
-
 def _status(args) -> int:
     """Report which nodes are free and healthy, and why the unhealthy ones failed."""
     import os
@@ -346,7 +323,7 @@ def _status(args) -> int:
             print(f"{r['name'][:26]:26} {r['pool'][:20]:20} {_gpu_cell(r):>6} "
                   f"{('OK' if r['healthy'] else 'UNHEALTHY'):7} {start+' -> '+end:29} "
                   f"{len(mine):>2} {state:8} {str(mine[0]['title'] or '')[:22]:22} "
-                  f"{_durations(mine, now)}")
+                  f"{format_durations(mine, now)}")
         print(f"\n{len(held)} node(s) reserved by you (ongoing + upcoming).")
         bad_held = [r for r in held if not r["healthy"]]
         if bad_held:

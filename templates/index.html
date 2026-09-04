@@ -527,7 +527,7 @@
         <div class="kv"><b>{{ reserved|length }} node(s) reserved by you</b></div>
         {% if reserved %}
         <table style="margin-top:8px">
-          <thead><tr><th>Node</th><th>Pool</th><th>GPU</th><th>Health</th><th>Your hold (UTC)</th><th>#</th><th>State</th><th>Continuous</th><th>Title</th></tr></thead>
+          <thead><tr><th>Node</th><th>Pool</th><th>GPU</th><th>Health</th><th>Your hold (UTC)</th><th>#</th><th>State</th><th>Durations</th><th>Continuous</th><th>Title</th></tr></thead>
           <tbody>
           {% for r in reserved|sort(attribute='name') %}
             {% set mine = r.mine %}
@@ -539,6 +539,7 @@
                 <td>{{ mine[0].date_start[5:16] }} → {{ (mine|map(attribute='date_end')|max)[5:16] }}</td>
                 <td class="mut">{{ mine|length }}</td>
                 <td>{% if active %}<span class="pill created">active</span>{% else %}<span class="pill planned">upcoming</span>{% endif %}</td>
+                <td class="mut">{{ r.durations }}</td>
                 <td>{% if r.held_continuous %}<span class="pill created">gap-free → {{ r.held_until[5:16] }}</span>
                     {% elif r.held_now %}<span class="pill failed">gap ahead</span>
                     {% else %}<span class="mut">—</span>{% endif %}</td>

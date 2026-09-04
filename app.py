@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 
 from flask import Flask, redirect, render_template, request, url_for
 
 from conductor_reserve import denylist, notify
 from conductor_reserve.config import load_config
 from conductor_reserve.engine import (CANCELLABLE_CLASSES, add_user, cancel_ids, cancel_small_gpu,
-                                      cancel_small_window, cancel_unhealthy, run,
+                                      cancel_small_window, cancel_unhealthy, format_durations, run,
                                       status_report, sync_users, verify_held)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -84,7 +85,11 @@ def _do_reserved():
         window = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
         rows = status_report(cfg, window_hours=window,
                              progress=lambda m: _last["log"].append(m))
-        _last["reserved"] = [r for r in rows if r["reserved_by_me"]]
+        now = datetime.now(timezone.utc)
+        reserved = [r for r in rows if r["reserved_by_me"]]
+        for r in reserved:
+            r["durations"] = format_durations(r["mine"], now)
+        _last["reserved"] = reserved
     finally:
         _last["running"] = False
 

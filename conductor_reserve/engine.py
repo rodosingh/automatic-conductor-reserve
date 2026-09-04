@@ -904,6 +904,29 @@ def _commit(client: ConductorClient, result: RunResult, emit) -> None:
         emit(f"  {node}: created {n} reservation(s)")
 
 
+def _dur_cell(secs: float, prefix: str = "") -> str:
+    """Seconds -> compact HhMm (e.g. '25h', '2h20m', '45m'); minutes dropped when zero."""
+    mins = max(0, int(secs)) // 60
+    h, m = divmod(mins, 60)
+    s = f"{h}h{m}m" if h and m else (f"{h}h" if h else f"{m}m")
+    return prefix + s
+
+
+def format_durations(mine: list, now) -> str:
+    """Per-reservation durations as a list string, e.g. '[+2h20m, 25h, 16h]'. An ACTIVE block
+    shows time LEFT (prefixed `+`); an upcoming block shows its full length. Order follows
+    `mine` (the status_report 'mine' list, sorted by start; date_start/date_end are ISO)."""
+    parts = []
+    for m in mine:
+        end = datetime.fromisoformat(m["date_end"])
+        if m["active"]:
+            parts.append(_dur_cell((end - now).total_seconds(), "+"))
+        else:
+            start = datetime.fromisoformat(m["date_start"])
+            parts.append(_dur_cell((end - start).total_seconds()))
+    return "[" + ", ".join(parts) + "]"
+
+
 def _short(msg: str) -> str:
     """Trim a server error to the informative part."""
     if "::" in msg:
