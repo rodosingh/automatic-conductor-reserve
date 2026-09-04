@@ -426,7 +426,9 @@ def cancel_unhealthy(config: dict, *, commit: bool = False, classes: tuple = CAN
 
     client = client or ConductorClient()
     title = config["reservation"]["title"]
-    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    # We release reservations we already HOLD, so ignore reserve-eligibility — a broken node
+    # in a block_api_access pool is ineligible for NEW reservations but we may still hold one.
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit, include_ineligible=True)
     # Treat every failure class as blocking here so the report can show them all; the
     # `classes` argument below decides which ones we actually act on.
     all_classes = (probe.CLASS_ACCESS, probe.CLASS_BROKEN, probe.CLASS_UNREACHABLE)
@@ -494,7 +496,9 @@ def cancel_small_window(config: dict, *, commit: bool = False,
     min_cont_s = float(policy.get("min_continuous_hours", 12)) * 3600
     max_gap_s = float(policy.get("max_gap_hours", 12)) * 3600
     title = config["reservation"]["title"]
-    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    # Judges reservations we already HOLD, so ignore reserve-eligibility (a block_api_access
+    # pool is ineligible for NEW reservations but we may still hold fragmented ones on it).
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit, include_ineligible=True)
     node_by_id = {n.id: n for n, _ in pairs}
 
     all_ours = client.find_our_reservations([n.id for n, _ in pairs], set(), {title})
