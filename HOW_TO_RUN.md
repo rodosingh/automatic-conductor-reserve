@@ -45,6 +45,7 @@ python cli.py status                      # table: gpu, docker, reserved, health
 python cli.py status --free               # only free & healthy nodes + copy-paste rocm-smi cmds
 python cli.py status --unhealthy          # only unhealthy nodes, with the reason each one failed
 python cli.py status --reserved           # only nodes YOU have reserved, with health + your window + title
+python cli.py status --continuous         # only nodes you hold ACTIVE now with gap-free coverage into the future
 python cli.py status --fast               # skip the reservation check (health only, quicker)
 python cli.py status --no-probe           # skip the SSH probe (Conductor's scraped data only, instant)
 python cli.py status --pool <id>          # one pool
