@@ -560,13 +560,15 @@ def add_user(config: dict, *, user: str, node_names: Optional[list] = None,
                 "persist_nodes": [], "persisted": [], "committed": bool(commit)}
     user_id = user_ids[0]
 
-    pairs, _, _, _ = _enumerate_nodes(client, config, emit)
+    # We add users to reservations we already HOLD, so reserve-eligibility is irrelevant — a
+    # node in a block_api_access pool is ineligible for NEW reservations but we still hold it.
+    pairs, _, _, _ = _enumerate_nodes(client, config, emit, include_ineligible=True)
     if node_names:
         want = {_norm(x) for x in node_names}
         pairs = [(n, p) for (n, p) in pairs if _norm(n.name) in want]
         missing = want - {_norm(n.name) for n, _ in pairs}
         if missing:
-            emit(f"WARNING: node(s) not eligible/found: {', '.join(sorted(missing))}")
+            emit(f"WARNING: node(s) not found in configured pools: {', '.join(sorted(missing))}")
     node_by_id = {n.id: n for n, _ in pairs}
 
     all_ours = client.find_our_reservations([n.id for n, _ in pairs], set(), {title})
