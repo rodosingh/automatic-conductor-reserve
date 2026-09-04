@@ -15,6 +15,7 @@ python cli.py whoami
 
 # 2) DRY-RUN — see exactly what would be reserved (no writes)
 python cli.py plan          # add -v for live progress
+python cli.py plan --no-probe   # dry-run, skip the SSH probe (instant)
 
 # 3) COMMIT — actually create the reservations (asks you to type 'yes')
 python cli.py run --commit
