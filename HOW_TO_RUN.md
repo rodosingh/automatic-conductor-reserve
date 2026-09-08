@@ -47,6 +47,7 @@ python cli.py status --free               # only free & healthy nodes + copy-pas
 python cli.py status --unhealthy          # only unhealthy nodes, with the reason each one failed
 python cli.py status --reserved           # only nodes YOU have reserved, with health + your window + title
 python cli.py status --continuous         # only nodes you hold ACTIVE now with gap-free coverage into the future
+python cli.py status --free-web           # free capacity in API-blocked pools — bookable ONLY in the Conductor web UI
 python cli.py status --fast               # skip the reservation check (health only, quicker)
 python cli.py status --no-probe           # skip the SSH probe (Conductor's scraped data only, instant)
 python cli.py status --pool <id>          # one pool
@@ -73,6 +74,14 @@ python cli.py allow <node> --commit       # re-enable AND reserve it, so step 8 
 **Reserve a single node from `status`:** pick a free & healthy node and run
 `python cli.py run --commit --node <name>` (the exact line is printed under "Reserve one").
 `--node` matches by short name or full hostname and works with `plan` (dry-run) too.
+
+**Free capacity the tool can't book — `status --free-web`.** Some pools set
+`block_api_access=True`; on those the Conductor API returns **406** on any write, so `plan`/`run`
+never touch them and they're marked INELIGIBLE. But those pools hold most of the free GPUs.
+`python cli.py status --free-web` lists the nodes there that have a bookable free window (largest
+stretch nobody holds, capped at the pool's booking horizon — these cap at 48h), healthy-first with
+denylisted nodes flagged, so you know exactly which to **reserve by hand in the Conductor web UI**.
+It's a read-only availability view, not a health guarantee.
 
 **Only worthwhile nodes are reserved (window filter, on by default).** A large team piles up
 a lot of small, scattered reservations, so `plan`/`run` skip fragmented nodes: a node is kept
@@ -257,6 +266,9 @@ python app.py               # open http://127.0.0.1:5057
 - **My reservations card** → **Show my reservations** lists the nodes YOU have reserved
   (ongoing + upcoming) with your window, block count, active/upcoming, and each node's health
   (mirrors `status --reserved`).
+- **Free capacity (web-UI-only) card** → **Show web-UI free capacity** lists nodes in the
+  `block_api_access` pools that have a bookable free window — reservable only by hand in the
+  Conductor web UI, since the API returns 406 (mirrors `status --free-web`).
 - The node-eligibility table shows each node's **GPU count** and why it was included/excluded.
 
 > The web app commits **all** configured pools together (no per-pool button). For per-pool

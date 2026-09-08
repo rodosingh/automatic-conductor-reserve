@@ -17,9 +17,9 @@ from flask import Flask, redirect, render_template, request, url_for
 
 from conductor_reserve import denylist, notify
 from conductor_reserve.config import load_config
-from conductor_reserve.engine import (CANCELLABLE_CLASSES, add_user, cancel_ids, cancel_small_gpu,
-                                      cancel_small_window, cancel_unhealthy, format_durations, run,
-                                      status_report, sync_users, verify_held)
+from conductor_reserve.engine import (CANCELLABLE_CLASSES, _norm, add_user, cancel_ids,
+                                      cancel_small_gpu, cancel_small_window, cancel_unhealthy,
+                                      format_durations, run, status_report, sync_users, verify_held)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 app = Flask(__name__)
@@ -28,7 +28,8 @@ app = Flask(__name__)
 _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
          "reserved": None, "health": None, "unhealthy": None, "active_n_healthy": None,
-         "denylist": None, "allow": None, "small_window": None, "add_user": None}
+         "denylist": None, "allow": None, "small_window": None, "add_user": None,
+         "free_web": None}
 
 
 def _do_run(commit: bool, filter_windows: bool = True, cancel_fragmented: bool = True):
@@ -90,6 +91,31 @@ def _do_reserved():
         for r in reserved:
             r["durations"] = format_durations(r["mine"], now)
         _last["reserved"] = reserved
+    finally:
+        _last["running"] = False
+
+
+def _do_free_web():
+    """`status --free-web`: bookable free capacity in the API-blocked pools (block_api_access),
+    reservable ONLY via the Conductor web UI (the API returns 406 on those pools)."""
+    cfg = load_config()
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        window = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
+        min_h = int(cfg.get("policy", {}).get("min_reservation_minutes", 60)) / 60.0
+        denied = denylist.load()
+        rows = status_report(cfg, window_hours=window,
+                             progress=lambda m: _last["log"].append(m))
+        free = [r for r in rows if not r.get("eligible", True)
+                and (r.get("free_window_h") or 0) >= min_h]
+        for r in free:
+            r["denylisted"] = _norm(r["name"]) in denied
+            r["usable"] = bool(r["healthy"]) and not r["denylisted"]
+        # Healthy & not-denylisted first, then widest free window.
+        free.sort(key=lambda r: (not r["usable"], -(r.get("free_window_h") or 0), r["name"]))
+        _last["free_web"] = {"rows": free, "min_h": min_h,
+                             "n_ok": sum(1 for r in free if r["usable"])}
     finally:
         _last["running"] = False
 
@@ -192,6 +218,7 @@ def index():
         allow=_last["allow"],
         small_window=_last["small_window"],
         add_user=_last["add_user"],
+        free_web=_last["free_web"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -294,6 +321,15 @@ def reserved_route():
     if not _last["running"]:
         with _lock:
             _do_reserved()
+    return redirect(url_for("index"))
+
+
+@app.route("/free-web", methods=["POST"])
+def free_web_route():
+    """Show bookable free capacity in API-blocked pools (web-UI-only). Read-only."""
+    if not _last["running"]:
+        with _lock:
+            _do_free_web()
     return redirect(url_for("index"))
 
 

@@ -45,6 +45,7 @@ python cli.py status                 # which nodes are free & healthy + why the 
 python cli.py status --free          # only free & healthy + copy-paste rocm-smi / reserve cmds
 python cli.py status --unhealthy     # only unhealthy nodes, with the reason each one failed
 python cli.py status --reserved      # only nodes YOU have reserved (ongoing + upcoming)
+python cli.py status --free-web      # free capacity in API-blocked pools — book by hand in the web UI
 python cli.py status --active_n_healthy  # probe nodes you HOLD now; --commit denylists+releases the bad
 python cli.py plan                   # DRY-RUN: show exactly what would be reserved (no writes)
 python cli.py run --commit           # create the reservations, then cancel still-fragmented ones
@@ -167,6 +168,8 @@ python app.py                 # http://127.0.0.1:5057
 - **Sync-users card** — add the config's default users to existing reservations.
 - **My reservations card** — nodes you have reserved (ongoing + upcoming), with each one's
   health, mirrors `status --reserved`.
+- **Free capacity (web-UI-only) card** — nodes in the `block_api_access` pools that have a
+  bookable free window, reservable only by hand in the Conductor web UI. Mirrors `status --free-web`.
 - Node-eligibility table shows each node's GPU count + include/exclude reason (probe failures
   included).
 

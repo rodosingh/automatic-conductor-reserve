@@ -558,6 +558,43 @@
     {% endif %}
   </div>
 
+  <div class="card">
+    <div class="kv"><b>Free capacity in web-UI-only pools</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Some pools set <code>block_api_access</code> — the API returns <b>406</b> on any write, so
+      <code>run</code>/<code>plan</code> never book them (they're dropped before scheduling). Yet
+      they hold most of the free GPUs. This lists the nodes there that have a bookable free window,
+      so you know exactly which to reserve <b>by hand in the Conductor web UI</b>. <code>free</code>
+      = the largest stretch nobody holds, capped at each pool's booking horizon (these cap at 48h);
+      it's availability, not a health guarantee. Read-only; takes ≈1–2 min. Mirrors
+      <code>python cli.py status --free-web</code>.
+    </div>
+    <form action="{{ url_for('free_web_route') }}" method="post">
+      <button class="btn btn-plan" {% if running %}disabled{% endif %}>🌐 Show web-UI free capacity</button>
+    </form>
+    {% if free_web is not none %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ free_web.rows|length }} node(s) in API-blocked pools have a free window ≥ {{ '%.0f'|format(free_web.min_h * 60) }} min · {{ free_web.n_ok }} healthy &amp; not denylisted</b></div>
+        {% if free_web.rows %}
+        <table style="margin-top:8px">
+          <thead><tr><th>Node</th><th>Pool</th><th>GPU</th><th>Health</th><th>Free from (UTC)</th><th>Free</th></tr></thead>
+          <tbody>
+          {% for r in free_web.rows %}
+            <tr><td>{{ r.name }}</td><td class="mut">{{ r.pool }}</td>
+                <td class="mut">{{ r.probe_gpus if r.probe_gpus is not none else r.gpu_detected }}/{{ r.gpu_expected }}</td>
+                <td>{% if r.denylisted %}<span class="pill failed">denylisted</span>
+                    {% elif r.healthy %}<span class="pill created">OK</span>
+                    {% else %}<span class="pill failed">{{ r.health_reason }}</span>{% endif %}</td>
+                <td class="mut">{{ r.free_window_start[5:16] if r.free_window_start else '—' }}</td>
+                <td>{{ '%.1f'|format(r.free_window_h or 0) }}h</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<div class="mut" style="font-size:13px;margin-top:6px">No free capacity found in the API-blocked pools right now.</div>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+
   {% if result %}
     {% set s = result.summary() %}
     <div class="card">
