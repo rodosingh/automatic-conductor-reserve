@@ -277,6 +277,41 @@ reservations cover the whole window), confirming the scheduler skips busy nodes 
      string, so a typo would still "succeed".)
   2. For the first real booking, cap the greedy run (e.g. `policy.max_nodes: 1`) or full send?
 
+## 11. Later discovery — the shared pools flipped to `block_api_access`, and the web-UI-only free view
+
+Long after the core build, a `run --commit` that only booked a **single** node looked alarming
+("is only one node free?"). It wasn't a bug — it exposed a **live state change** in the pools.
+
+- **What changed:** at build time (§6) both shared pools reported `block_api_access=False`.
+  Re-reading them live, **both Pool A and Pool B now report `block_api_access=True`.** This is a
+  server/admin-side flag, not something we set — and it may be transient, so it must be read live
+  every run (never cached).
+- **Effect:** `block_api_access=True` makes the Conductor API return **`406`** on *any* write
+  (create / patch / delete) to nodes in that pool. Per the eligibility rule from §6/§8 (which
+  already includes a `not block_api_access` clause), `get_pool()` now marks both pools
+  **INELIGIBLE**, so `plan`/`run` drop every node in them **at the eligibility gate, before
+  scheduling**. Only the one remaining API-eligible pool (the "Models" pool, no per-pool caps →
+  falls back to config's 14-day / 24h defaults) is bookable — which is why `run --commit` only
+  ever touches nodes there.
+- **Why "one node" was misleading:** those two blocked pools hold the *majority* of the nodes and
+  most of the free GPUs. The tool genuinely couldn't book any of them; the single node it did book
+  was simply the only eligible-pool node with a free gap reaching the horizon. "The planner planned
+  nothing" here means **"no *bookable* capacity"**, not "no capacity".
+- **What we built in response — `status --free-web`** (CLI) + a Flask **"Free capacity
+  (web-UI-only)"** card. It reuses the existing per-node reservation scan (no extra API calls) to
+  compute each blocked-pool node's largest free window, then lists them healthy-first with
+  denylisted nodes flagged — so you know exactly which to **reserve by hand in the Conductor web
+  UI**, the only path the 406 leaves open.
+  - **Bug caught while building it:** the first version reported absurd multi-hundred-hour free
+    windows, because the only bound on the scan was its own look-ahead horizon. Fix: cap each
+    window at the pool's `furthest_future_reservation` **and** `reservation_duration_limit` (both
+    **48h** for these pools, confirmed live) — the same server caps §6 found. Windows are now ≤48h,
+    i.e. what's actually bookable.
+- **Learning:** pool eligibility is **live state, not a fixed property** — a pool can flip to
+  `block_api_access` between sessions. Re-read it each run, and when the tool reserves fewer nodes
+  than expected, check whether the free capacity is simply sitting in a now-blocked pool
+  (reservable only via the web UI). See Appendix A's `block_api_access` field.
+
 ## Appendix A — Verified API facts (reference)
 
 From the bundle reverse-engineering + live validation. Auth for all: `Authorization:
