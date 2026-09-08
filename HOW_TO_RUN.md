@@ -298,6 +298,49 @@ python app.py               # open http://127.0.0.1:5057
   a node already booked by other teams for the whole window is simply left alone (re-run later
   as it frees up).
 
+### Team booking — one key per node (`book_team.py`)
+
+When you're booking **on behalf of a team** — several teammates' keys, each holding one node,
+every reservation shared with the same group — use `book_team.py` instead of `cli.py run`. It
+reads a node-per-credential map from `team_booking.assignments` in `config.yaml` and, for each
+assignment, authenticates as that identity **in its own subprocess** (credentials never bleed
+between bookings) and reserves only that node's free window, shared with `reservation.users`.
+
+Setup:
+- In `.env` (mode 600, gitignored): keep your own `AMD_EMAIL`/`ATS_SECRET`, then add one
+  `CRED_<N>_EMAIL` / `CRED_<N>_SECRET` pair per teammate identity. See `env.example`.
+- In `config.yaml`: list the shared group under `reservation.users`, and map each credential to
+  a node under `team_booking.assignments` (`cred: default` = your `AMD_EMAIL`; `cred: <N>` =
+  `CRED_<N>`). Every assigned node must also appear in an eligible pool's `only_nodes`.
+
+```bash
+cd ~/automatic-conductor-reserve
+
+# DRY-RUN (default) — show what every key would book, no writes
+python book_team.py
+python book_team.py --only default   # just your own node
+python book_team.py --only 3         # just credential 3
+python book_team.py --only <node>    # just that node name
+
+# COMMIT — actually create the reservations
+python book_team.py --commit
+python book_team.py --commit --only default
+
+# optional: SSH health-check each node first, skip broken/unreachable (slower)
+python book_team.py --commit --probe
+```
+
+Each run grabs whatever time has newly freed on each assigned node and extends the hold, so a
+**cron keeps the nodes held** (renewal is just re-running):
+
+```cron
+*/30 * * * * cd /home/USER/automatic-conductor-reserve && /path/to/python book_team.py --commit >> ~/book_team.log 2>&1
+```
+
+Nodes with no free time in the horizon simply book nothing that run and are caught as time
+opens. `book_team.py` reuses the same engine as `cli.py run`, so the GPU/health/horizon rules
+above all apply per node.
+
 ---
 
 ## B. Giving it to a colleague
