@@ -330,27 +330,61 @@ python book_team.py --commit --only default
 python book_team.py --commit --probe
 ```
 
-Each run grabs whatever time has newly freed on each assigned node and extends the hold, so a
-**cron keeps the nodes held** (renewal is just re-running). Install it once:
+#### Keep the nodes held automatically (cron)
+
+Each run only grabs time that is *free right now*, so to hold the nodes you just re-run
+`book_team.py --commit` on a schedule. A cron job every 30 min does that. There are three
+things you'll do: **start it**, **check it**, **stop it**.
+
+**1. Start it** — add one line to your crontab. Replace `USER` with your username
+(`whoami`), and make sure the python path is yours (`which python`).
 
 ```bash
-# add the renewal job to your crontab (every 30 min). Use ABSOLUTE paths — cron has no
-# conda env and starts in $HOME, so it must cd into the project and call python by full path.
+# opens nothing — this appends the job and saves. Runs every 30 min.
 ( crontab -l 2>/dev/null; \
   echo '*/30 * * * * cd /home/USER/automatic-conductor-reserve && /home/USER/miniconda3/bin/python book_team.py --commit >> /home/USER/book_team.log 2>&1' \
 ) | crontab -
-
-crontab -l                 # verify the line is present (and includes the `cd ... &&`)
-tail -f ~/book_team.log    # watch what each run books
 ```
 
-Two things that bite on WSL / fresh boxes:
-- **The `cd` is required** — `book_team.py` reads `config.yaml` and `.env` from the current
-  directory. Without `cd`, cron runs in `$HOME` and the job can't find them.
-- **The cron daemon must be running.** WSL often doesn't start it. Check and start:
-  ```bash
-  pgrep -x cron >/dev/null && echo running || sudo service cron start
-  ```
+Then make sure the cron **service** is actually running (on WSL it usually isn't until you
+start it — the job above will silently never fire otherwise):
+
+```bash
+pgrep -x cron >/dev/null && echo "cron running" || sudo service cron start
+```
+
+> Why the line looks the way it does: cron runs with a bare environment starting in your home
+> dir, so the job must `cd` into the project (it reads `config.yaml` + `.env` from the current
+> dir) and call python by its **full path** (cron has no conda on `PATH`). `>> …book_team.log
+> 2>&1` appends every run's output to a log so you can see what happened.
+
+**2. Check it** — confirm the job is registered and watch what it books.
+
+```bash
+crontab -l                     # show the installed job (should contain the `cd … &&` line)
+tail -f ~/book_team.log        # live: what each run books; Ctrl-C to stop watching (job keeps running)
+tail -n 40 ~/book_team.log     # just the last run
+```
+
+To force a run right now instead of waiting for the next :00/:30, just run the command yourself:
+
+```bash
+cd ~/automatic-conductor-reserve && python book_team.py --commit
+```
+
+**3. Stop it** — two options:
+
+```bash
+crontab -e        # opens your crontab in an editor: delete the book_team line, save, quit
+                  # (removes ONLY this job, leaves any others you have)
+
+crontab -r        # nuclear: removes your ENTIRE crontab (every job). Use only if this is the
+                  # only cron job you have.
+```
+
+Stopping the cron does **not** cancel anything already booked — the reservations you already
+hold stay until their end time; you simply stop *renewing* them. To also release held nodes,
+use `python cli.py cancel-small-window` / the Conductor web UI.
 
 Nodes with no free time in the horizon simply book nothing that run and are caught as time
 opens. `book_team.py` reuses the same engine as `cli.py run`, so the GPU/health/horizon rules
