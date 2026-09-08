@@ -17,7 +17,7 @@ import sys
 from conductor_reserve import notify
 from conductor_reserve.config import load_config
 from conductor_reserve.conductor import ConductorClient
-from conductor_reserve.engine import format_durations, run
+from conductor_reserve.engine import _norm, format_durations, run
 
 
 def main(argv=None) -> int:
@@ -89,6 +89,9 @@ def main(argv=None) -> int:
                     help="show only currently-reserved nodes, with who holds them and until when")
     st.add_argument("--continuous", action="store_true",
                     help="only nodes you hold ACTIVE now with gap-free coverage into the future")
+    st.add_argument("--free-web", action="store_true",
+                    help="free capacity in API-blocked pools (block_api_access) — bookable ONLY "
+                         "via the Conductor web UI, never this tool")
     st.add_argument("--active_n_healthy", action="store_true",
                     help="probe ONLY nodes you hold an ACTIVE reservation on — the one state where "
                          "an SSH failure is a real verdict; with --commit, denylist + release any "
@@ -276,17 +279,45 @@ def _status(args) -> int:
     if getattr(args, "pool", None):
         cfg = _filter_pools(cfg, args.pool)
     ssh_user = args.ssh_user or cfg.get("ssh_user") or os.getenv("USER") or "<your-ntid>"
-    if (args.reserved or args.continuous) and args.fast:
-        print("--reserved/--continuous need the reservation check; ignoring --fast.")
+    if (args.reserved or args.continuous or args.free_web) and args.fast:
+        print("--reserved/--continuous/--free-web need the reservation check; ignoring --fast.")
         args.fast = False
-    # For "reserved by me" / "continuous" show the full future holdings, not just the next 48h.
+    # For holdings / free-window views, look across the full horizon, not just the next 48h.
     window_hours = 48
-    if args.reserved or args.continuous:
+    if args.reserved or args.continuous or args.free_web:
         window_hours = max(48, int(cfg.get("policy", {}).get("default_horizon_days", 14)) * 24 + 48)
     rows = status_report(cfg, check_reservations=not args.fast, window_hours=window_hours,
                          probe_health=not args.no_probe,
                          progress=lambda m: print("·", m) if args.verbose else None)
     unhealthy = [r for r in rows if not r["healthy"]]
+
+    if args.free_web:
+        from conductor_reserve import denylist
+        min_h = int(cfg.get("policy", {}).get("min_reservation_minutes", 60)) / 60.0
+        denied = denylist.load()
+        free = [r for r in rows if not r.get("eligible", True)
+                and (r.get("free_window_h") or 0) >= min_h]
+        free.sort(key=lambda r: -(r.get("free_window_h") or 0))
+        print(f"{'node':26} {'pool':26} {'gpu':>6} {'health':12} {'free from (UTC)':16} {'free':>7}")
+        print("-" * 100)
+        n_ok = 0
+        for r in sorted(free, key=lambda r: (r.get("healthy") is not True,
+                                             -(r.get("free_window_h") or 0), r["name"])):
+            dl = _norm(r["name"]) in denied
+            health = "denylisted" if dl else ("OK" if r["healthy"] else (r["health_reason"] or "UNHEALTHY"))
+            usable = r["healthy"] and not dl
+            n_ok += usable
+            start = (r.get("free_window_start") or "")[5:16]
+            print(f"{r['name'][:26]:26} {r['pool'][:26]:26} {_gpu_cell(r):>6} "
+                  f"{health[:12]:12} {start:16} {(r.get('free_window_h') or 0):6.1f}h")
+        print(f"\n{len(free)} node(s) in API-blocked pools have a free window ≥ {min_h*60:.0f} min "
+              f"({n_ok} healthy & not denylisted).")
+        print("These pools set block_api_access=True — the API returns 406, so reserve them in "
+              "the Conductor web UI. 'free' = the bookable stretch nobody holds, capped at each "
+              "pool's booking horizon (these cap at 48h); health is "
+              f"{'the live SSH probe' if not args.no_probe else 'Conductor scraped data (--no-probe)'}, "
+              "and 'free' is availability, not a health guarantee.")
+        return 0
 
     if args.continuous:
         held = [r for r in rows if r.get("held_now") and r.get("held_continuous")]
