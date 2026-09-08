@@ -90,6 +90,45 @@
   </div>
 
   <div class="card">
+    <div class="kv"><b>Team booking — one key per node</b></div>
+    <div class="mut" style="font-size:12px;margin:6px 0 12px">
+      Books on behalf of the team: each credential in <code>.env</code> holds ONE node (mapped in
+      <code>team_booking.assignments</code>), every reservation shared with the
+      {{ config.users|length }}-person group above. Each key runs in its own subprocess so
+      credentials never mix; re-running renews the holds. Mirrors <code>python book_team.py</code>.
+    </div>
+    {% if config.assignments %}
+    <table style="margin-bottom:12px">
+      <thead><tr><th>Credential</th><th>Node</th></tr></thead>
+      <tbody>
+      {% for a in config.assignments %}
+        <tr><td class="mut">{{ 'default (you)' if a.cred == 'default' else 'CRED_' ~ a.cred }}</td>
+            <td>{{ a.node }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    <form action="{{ url_for('team_book_route') }}" method="post" onsubmit="return this.confirm.checked ? confirm('Create REAL reservations under each teammate key?') : true;">
+      <input type="text" name="only" placeholder="only: a cred label or node name — blank = all"
+             style="padding:6px;border:1px solid #ccc;border-radius:4px;width:300px">
+      <div class="row" style="margin-top:8px">
+        <label class="mut" style="font-size:13px"><input type="checkbox" name="confirm"> book for real (leave off for dry-run)</label>
+        <button class="btn btn-plan" {% if running %}disabled{% endif %}>▶ Dry-run / ✓ Book</button>
+        {% if running %}<span class="mut">running… (≈2–3 min for all keys)</span>{% endif %}
+      </div>
+    </form>
+    {% if team %}
+      <div style="margin-top:12px">
+        <div class="kv"><b>{{ 'COMMIT' if team.commit else 'DRY-RUN' }}{% if team.only %} · only {{ team.only }}{% endif %}{% if team.commit %} — {{ team.created }} reservation(s) created{% endif %}</b>
+          {% if team.rc != 0 %}<span class="pill failed" style="margin-left:8px">exit {{ team.rc }}</span>{% endif %}
+        </div>
+        <pre style="margin-top:8px;background:#f6f8fa;padding:10px;border:1px solid var(--line);border-radius:6px;overflow:auto;font-size:12px;max-height:360px">{% for ln in team.lines %}{{ ln }}
+{% endfor %}</pre>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <div class="kv"><b>Cancel our reservations on excluded (sub-{{ config.policy.min_gpus or 2 }}-GPU) nodes</b></div>
     <div class="mut" style="font-size:12px;margin:6px 0 12px">
       Finds current + future reservations under our title/users on nodes below the GPU minimum,

@@ -331,11 +331,26 @@ python book_team.py --commit --probe
 ```
 
 Each run grabs whatever time has newly freed on each assigned node and extends the hold, so a
-**cron keeps the nodes held** (renewal is just re-running):
+**cron keeps the nodes held** (renewal is just re-running). Install it once:
 
-```cron
-*/30 * * * * cd /home/USER/automatic-conductor-reserve && /path/to/python book_team.py --commit >> ~/book_team.log 2>&1
+```bash
+# add the renewal job to your crontab (every 30 min). Use ABSOLUTE paths — cron has no
+# conda env and starts in $HOME, so it must cd into the project and call python by full path.
+( crontab -l 2>/dev/null; \
+  echo '*/30 * * * * cd /home/USER/automatic-conductor-reserve && /home/USER/miniconda3/bin/python book_team.py --commit >> /home/USER/book_team.log 2>&1' \
+) | crontab -
+
+crontab -l                 # verify the line is present (and includes the `cd ... &&`)
+tail -f ~/book_team.log    # watch what each run books
 ```
+
+Two things that bite on WSL / fresh boxes:
+- **The `cd` is required** — `book_team.py` reads `config.yaml` and `.env` from the current
+  directory. Without `cd`, cron runs in `$HOME` and the job can't find them.
+- **The cron daemon must be running.** WSL often doesn't start it. Check and start:
+  ```bash
+  pgrep -x cron >/dev/null && echo running || sudo service cron start
+  ```
 
 Nodes with no free time in the horizon simply book nothing that run and are caught as time
 opens. `book_team.py` reuses the same engine as `cli.py run`, so the GPU/health/horizon rules
