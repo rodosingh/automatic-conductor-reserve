@@ -735,6 +735,14 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
                            and h["gpu_detected"] == h["gpu_expected"] and h["gpu_detected"] >= min_gpus)
             h.update(probe_ok=None, probe_reason="", probe_gpus=None, probe_docker=None,
                      probe_cls="")
+            # Reserve-eligibility of the node's pool: an ineligible pool (block_api_access etc.)
+            # can only be booked via the Conductor web UI, never this tool's API token.
+            h["eligible"] = bool(pool.eligible)
+            h["pool_reason"] = pool.reason
+            # Pool booking caps: a reservation may end at most furthest_future ahead and last
+            # at most duration_limit. Used to cap the reported free window to what's bookable.
+            h["furthest_future_s"] = pool.furthest_future_s
+            h["duration_limit_s"] = pool.duration_limit_s
             rows.append(h)
 
     # Live SSH probe — the authoritative verdict. Skip nodes we'd never reserve anyway
@@ -795,10 +803,30 @@ def status_report(config: dict, *, client: Optional[ConductorClient] = None,
         h["held_now"] = False
         h["held_continuous"] = False
         h["held_until"] = None
+        h["free_window_h"] = None
+        h["free_window_start"] = None
         h["mine"] = []
         if check_reservations:
             resv = client.reservations_window(h["id"], now, now + timedelta(hours=window_hours))
             intervals = _merge_iv([(r["date_start"], r["date_end"]) for r in resv])
+            # Largest stretch nobody holds that you could actually BOOK — bookable capacity.
+            # Bounded by the pool's furthest_future (how far ahead a reservation may end) and
+            # its duration_limit (how long one may last). Used by the free-capacity report;
+            # on API-blocked pools it's web-UI-only headroom.
+            horizon_end = now + timedelta(hours=window_hours)
+            if h["furthest_future_s"]:
+                horizon_end = min(horizon_end, now + timedelta(seconds=h["furthest_future_s"]))
+            clipped = sorted((max(s, now), min(e, horizon_end))
+                             for s, e in intervals if e > now and s < horizon_end)
+            cursor, best_s, best_len = now, None, 0.0
+            for s, e in clipped + [(horizon_end, horizon_end)]:
+                if s > cursor and (s - cursor).total_seconds() > best_len:
+                    best_len, best_s = (s - cursor).total_seconds(), cursor
+                cursor = max(cursor, e)
+            if h["duration_limit_s"]:
+                best_len = min(best_len, h["duration_limit_s"])
+            h["free_window_h"] = best_len / 3600.0
+            h["free_window_start"] = best_s.isoformat() if best_s else None
             active = [iv for iv in intervals if iv[0] <= now < iv[1]]
             h["reserved_now"] = bool(active)
             if active:
