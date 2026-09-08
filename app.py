@@ -10,6 +10,10 @@ Run:  python app.py    then open http://127.0.0.1:5057
 from __future__ import annotations
 
 import logging
+import os
+import re
+import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 
@@ -29,7 +33,7 @@ _lock = threading.Lock()
 _last = {"result": None, "log": [], "running": False, "cancel": None, "sync": None,
          "reserved": None, "health": None, "unhealthy": None, "active_n_healthy": None,
          "denylist": None, "allow": None, "small_window": None, "add_user": None,
-         "free_web": None}
+         "free_web": None, "team": None}
 
 
 def _do_run(commit: bool, filter_windows: bool = True, cancel_fragmented: bool = True):
@@ -179,6 +183,34 @@ def _do_active_n_healthy(commit: bool):
         _last["running"] = False
 
 
+def _do_team(commit: bool, only: str | None = None):
+    """Team booking: one key per node via book_team.py.
+
+    The Flask process holds a single identity, but team booking must authenticate as EACH
+    teammate. book_team.py already spawns an isolated subprocess per credential, so we shell
+    out to it (rather than re-implement that here) and capture its output for the card.
+    """
+    _last["log"] = []
+    _last["running"] = True
+    try:
+        cmd = [sys.executable, "book_team.py"]
+        if commit:
+            cmd.append("--commit")
+        if only:
+            cmd += ["--only", only]
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=os.path.dirname(os.path.abspath(__file__)))
+        lines = [ln for ln in (proc.stdout or "").splitlines()
+                 if not re.search(r"warning|insecure", ln, re.I)]
+        if proc.returncode != 0 and (proc.stderr or "").strip():
+            lines += ["", "stderr:"] + (proc.stderr or "").strip().splitlines()[-10:]
+        _last["team"] = {"commit": commit, "only": only, "lines": lines,
+                         "created": sum(1 for ln in lines if "created:" in ln),
+                         "rc": proc.returncode}
+    finally:
+        _last["running"] = False
+
+
 def _do_denylist():
     _last["log"] = []
     _last["denylist"] = denylist.load()
@@ -219,6 +251,7 @@ def index():
         small_window=_last["small_window"],
         add_user=_last["add_user"],
         free_web=_last["free_web"],
+        team=_last["team"],
         log=_last["log"],
         running=_last["running"],
         runs=notify.list_runs()[:10],
@@ -343,6 +376,17 @@ def active_n_healthy_route():
     return redirect(url_for("index"))
 
 
+@app.route("/team-book", methods=["POST"])
+def team_book_route():
+    """Book one node per credential (book_team.py). Dry-run unless the confirm box is ticked."""
+    do_commit = request.form.get("confirm") == "on"
+    only = (request.form.get("only") or "").strip() or None
+    if not _last["running"]:
+        with _lock:
+            _do_team(commit=do_commit, only=only)
+    return redirect(url_for("index"))
+
+
 @app.route("/denylist", methods=["POST"])
 def denylist_route():
     """Show the persistent denylist that run/plan skip unconditionally. Read-only."""
@@ -371,6 +415,7 @@ def _safe_config():
             "team_name": r["team_name"], "users": r.get("users", []),
             "batch_opt_out": r.get("batch_opt_out", True),
             "pools": [p["id"] for p in cfg["pools"]], "policy": cfg.get("policy", {}),
+            "assignments": (cfg.get("team_booking") or {}).get("assignments", []),
         }
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
