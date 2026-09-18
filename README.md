@@ -331,14 +331,25 @@ Force a run **now** instead of waiting for the next quarter-hour:
 
 #### Stop
 
+Remove just this job (same filter the installer uses — other crontab entries stay):
+
 ```bash
-crontab -e        # delete the book_team line (and its comment), save, quit — other jobs stay
+( crontab -l 2>/dev/null | grep -v -E 'book_team\.py|run_book_team_cron\.sh|automatic-conductor-reserve: book assigned|python env:' || true ) | crontab -
+crontab -l    # verify it's gone
+```
+
+```bash
+crontab -e        # or edit by hand: delete the book_team line (and its comments), save, quit
 crontab -r        # nuclear: removes your ENTIRE crontab. Only if this is your only job.
 ```
 
+To pause instead of remove, `crontab -e` and comment the `*/15 …` line out with a `#`.
+Don't use `sudo service cron stop` — that stops the daemon for every job on the machine.
+
 Stopping cron does **not** cancel reservations already created. They stay until their end
 time; you just stop *renewing* them. To also release held nodes, use
-`python cli.py cancel-small-window --commit` or the Conductor web UI.
+`python cli.py cancel-small-window --commit` or the Conductor web UI. A tick already in
+flight finishes on its own; `pkill -f book_team.py` ends it now.
 
 #### Manual crontab (no installer)
 

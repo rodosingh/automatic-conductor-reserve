@@ -507,17 +507,33 @@ To force a run **right now** instead of waiting for the next `:00` / `:15` / `:3
 
 ##### 3. Stop it
 
+The one-liner below removes **only** this job, using the same match as `install_cron.sh`, so
+any other crontab entries you have are left untouched:
+
 ```bash
-crontab -e        # opens your crontab in an editor: delete the book_team comment + line,
+( crontab -l 2>/dev/null | grep -v -E 'book_team\.py|run_book_team_cron\.sh|automatic-conductor-reserve: book assigned|python env:' || true ) | crontab -
+crontab -l    # verify it's gone
+```
+
+By hand, or if you want everything gone:
+
+```bash
+crontab -e        # opens your crontab in an editor: delete the book_team comments + line,
                   # save, quit. Removes ONLY this job; leaves any others you have.
 
 crontab -r        # nuclear: removes your ENTIRE crontab (every job). Use only if this is the
                   # only cron job you have.
 ```
 
+To **pause** rather than remove it, `crontab -e` and put a `#` in front of the `*/15 …` line;
+delete the `#` to resume. Do **not** `sudo service cron stop` for this — that stops the cron
+daemon for every job on the machine, not just yours.
+
 Stopping the cron does **not** cancel anything already booked — the reservations you already
 hold stay until their end time; you simply stop *renewing* them. To also release held nodes,
-use `python cli.py cancel-small-window --commit` / the Conductor web UI.
+use `python cli.py cancel-small-window --commit` / the Conductor web UI. A tick that is
+already running when you remove the line finishes normally; `pkill -f book_team.py` stops it
+immediately.
 
 ##### What each tick actually does
 
