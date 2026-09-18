@@ -7,7 +7,7 @@ official **Conductor Python SDK** — no browser, no cookies, nothing that expir
 > **Dry-run is the default.** Nothing is ever created unless you explicitly commit
 > (CLI `--commit` + typed `yes`, or the web **Reserve for real** checkbox).
 
-- **[HOW_TO_RUN.md](HOW_TO_RUN.md)** — step-by-step run guide + how to hand it to colleagues.
+- **[HOW_TO_RUN.md](HOW_TO_RUN.md)** — step-by-step run guide, team booking, cron, and how to hand it to colleagues.
 - **[DISCOVERY_LOG.md](DISCOVERY_LOG.md)** — the full build story (every dead-end, fix, learning).
 
 ## Setup
@@ -15,12 +15,17 @@ official **Conductor Python SDK** — no browser, no cookies, nothing that expir
 Already done on this machine, but for reference:
 
 ```bash
-# SDK (into base conda):
+# SDK into the venv used by the cron job (recommended):
+#   python3 -m venv ~/conductor-venv
+#   source ~/conductor-venv/bin/activate
 pip install conductor_sdk flask pyyaml ruamel.yaml \
   --index-url https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple \
   --extra-index-url https://pypi.org/simple \
   --trusted-host mkmartifactory.amd.com
 ```
+
+The cron installer looks for Python at **`~/conductor-venv/bin/python`**. Override with
+`CONDUCTOR_PYTHON` if yours lives somewhere else (conda, another venv, etc.).
 
 Credentials live in **`.env`** (mode 600, gitignored):
 
@@ -28,6 +33,10 @@ Credentials live in **`.env`** (mode 600, gitignored):
 AMD_EMAIL=you@amd.com
 ATS_SECRET=<your Conductor API key>     # Conductor UI > profile > API key
 VERIFY_CERTS=false
+
+# optional — book_team.py identities (one assigned node each)
+CRED_1_EMAIL=teammate1@amd.com
+CRED_1_SECRET=<teammate1 Conductor API key>
 ```
 
 Config lives in **`config.yaml`** (gitignored — keep your real values local):
@@ -59,6 +68,9 @@ python cli.py allow N                # re-enable a denylisted node (add --commit
 python cli.py sync-users             # add config's default users to existing reservations
 python cli.py add-user EMAIL         # add ONE person (need not be in config) to our reservations; scope with --node
 python cli.py runs                   # list past run summaries
+python book_team.py                  # DRY-RUN: one assigned node per teammate key (see Team booking)
+python book_team.py --commit         # actually book those nodes
+./install_cron.sh                    # crontab: re-run book_team.py --commit every 15 min
 ```
 
 Shared flags on `plan` / `run` (and where noted): `--pool <id>` (repeatable, restrict pools),
@@ -175,6 +187,176 @@ python app.py                 # http://127.0.0.1:5057
 
 Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 
+### Team booking (`book_team.py`)
+
+When you book **on behalf of a team** — several teammates' keys, each holding **one** node,
+every reservation shared with `reservation.users` — use `book_team.py` instead of
+`cli.py run`.
+
+It reads `team_booking.assignments` from `config.yaml`. Each entry maps a `.env` credential
+to exactly one node:
+
+- `cred: default` → `AMD_EMAIL` / `ATS_SECRET`
+- `cred: <N>` → `CRED_<N>_EMAIL` / `CRED_<N>_SECRET`
+
+For each assignment it authenticates as that identity **in its own subprocess** (credentials
+never bleed between bookings) and reserves **only that node's currently-free window**, shared
+with the group in `reservation.users`. Every assigned node must also appear in an eligible
+pool's `only_nodes`.
+
+```yaml
+# config.yaml (excerpt)
+team_booking:
+  assignments:
+    - {cred: 1,       node: "<node-for-cred-1>"}
+    - {cred: 2,       node: "<node-for-cred-2>"}
+    # - {cred: default, node: "<your-extra-node>"}   # AMD_EMAIL / ATS_SECRET
+```
+
+```bash
+python book_team.py                         # dry-run: show what every key would book
+python book_team.py --only default          # just your own node
+python book_team.py --only 3                # just credential 3
+python book_team.py --only <node-name>      # just that node
+python book_team.py --commit                # actually create the reservations
+python book_team.py --commit --probe        # SSH-health-check each node first (slower)
+```
+
+`book_team.py` reuses the same engine as `cli.py run`, **except**:
+
+- it does **not** apply the window / fragmentation filter (`filter_windows=False`)
+- it does **not** cancel still-fragmented holds afterward (`cancel_fragmented=False`)
+- the SSH probe is **off** unless you pass `--probe`
+
+A run only grabs time that is *free right now*. Re-running extends the hold as gaps open —
+that is what the cron job is for.
+
+### Cron: hold assigned nodes every 15 minutes
+
+`install_cron.sh` installs a user crontab entry that re-runs
+`python book_team.py --commit` every 15 minutes (`:00`, `:15`, `:30`, `:45`).
+
+#### Start
+
+```bash
+cd ~/automatic-conductor-reserve
+chmod +x install_cron.sh
+./install_cron.sh
+```
+
+The installer is **idempotent**: it replaces any previous `book_team.py` crontab line and
+leaves every other job alone. It then prints the installed crontab and whether the cron
+daemon is running.
+
+On WSL the daemon is often stopped until you start it — without it the crontab line is
+registered but **never fires**:
+
+```bash
+pgrep -x cron >/dev/null && echo "cron running" || sudo service cron start
+```
+
+#### What gets installed
+
+Exact crontab (paths resolved from `$HOME` and this repo):
+
+```
+# automatic-conductor-reserve: book assigned team nodes every 15 min
+# python env: /home/USER/conductor-venv/bin/python
+*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1
+```
+
+Cron does **not** inherit your shell venv. Bare `python` under cron is `/usr/bin/python3` (no
+SDK). `run_book_team_cron.sh` pins **`~/conductor-venv`**: `VIRTUAL_ENV`, venv `PATH`,
+unsets `PYTHONHOME`/`PYTHONPATH`, then execs that interpreter. `install_cron.sh` refuses to
+install unless that python can `import conductor_sdk`. Each tick logs `sys.executable` and
+`sys.prefix` at the top of `~/book_team.log`. Overlapping ticks `flock` a lock under
+`~/.cache/` (not shared `/tmp`) and log `skipped: previous run still holds …`.
+
+| Piece | Why it's there |
+|---|---|
+| `*/15 * * * *` | every 15 minutes |
+| `CONDUCTOR_PYTHON` / `CONDUCTOR_VENV` | baked into the crontab so the runner never falls back to system python |
+| `run_book_team_cron.sh` | `cd`s into the repo, `flock`s, then `book_team.py --commit` |
+| `BOOK_TEAM_LOCK` | user-owned lock so overlapping ticks skip instead of stacking |
+| `>> ~/book_team.log 2>&1` | append stdout + stderr of every run |
+
+#### Installer environment overrides
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CONDUCTOR_PYTHON` | `$HOME/conductor-venv/bin/python` | interpreter that has `conductor_sdk` (baked into crontab) |
+| `CONDUCTOR_VENV` | `$HOME/conductor-venv` | venv root; runner sets `VIRTUAL_ENV` from this |
+| `BOOK_TEAM_LOG` | `$HOME/book_team.log` | where each run's output is appended |
+| `BOOK_TEAM_LOCK` | `$HOME/.cache/automatic-conductor-reserve/book_team.lock` | `flock` file so overlapping ticks skip |
+
+```bash
+CONDUCTOR_PYTHON=/path/to/python BOOK_TEAM_LOG=/tmp/book_team.log ./install_cron.sh
+```
+
+#### Check
+
+```bash
+crontab -l                     # must contain `run_book_team_cron.sh` and `CONDUCTOR_PYTHON=.../conductor-venv/bin/python`
+tail -f ~/book_team.log        # live: what each run books; Ctrl-C stops watching, not the job
+tail -n 80 ~/book_team.log     # last run(s)
+```
+
+A healthy tick looks like:
+
+```
+===== 2026-09-18T06:45:00Z =====
+python: /home/USER/conductor-venv/bin/python
+prefix: /home/USER/conductor-venv
+conductor_sdk: /home/USER/conductor-venv/lib/python3.10/site-packages/conductor_sdk/__init__.py
+=== book_team.py [COMMIT] — N assignment(s) ===
+
+[cred 1] teammate1@amd.com  ->  <node>
+  authenticated as teammate1@amd.com
+  node <node>: … reservation(s)  window …  shared_with=… user(s)
+    - created: <reservation-id>
+  # or, if that node has no free time this tick:
+  node <node>: nothing free to book right now (0 reservations)
+
+=== done (COMMIT) ===
+```
+
+`nothing free to book right now` is normal — the node is already held through the horizon;
+later ticks pick up time as it frees. JSONL run artifacts also land under `runs/`.
+
+Force a run **now** instead of waiting for the next quarter-hour:
+
+```bash
+~/automatic-conductor-reserve/run_book_team_cron.sh
+```
+
+#### Stop
+
+```bash
+crontab -e        # delete the book_team line (and its comment), save, quit — other jobs stay
+crontab -r        # nuclear: removes your ENTIRE crontab. Only if this is your only job.
+```
+
+Stopping cron does **not** cancel reservations already created. They stay until their end
+time; you just stop *renewing* them. To also release held nodes, use
+`python cli.py cancel-small-window --commit` or the Conductor web UI.
+
+#### Manual crontab (no installer)
+
+If you would rather paste the line yourself:
+
+```bash
+( crontab -l 2>/dev/null | grep -v -E 'book_team\.py|automatic-conductor-reserve: book assigned|run_book_team_cron\.sh|python env:' || true; \
+  echo '# automatic-conductor-reserve: book assigned team nodes every 15 min'; \
+  echo '# python env: /home/USER/conductor-venv/bin/python'; \
+  echo '*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1' \
+) | crontab -
+```
+
+Replace `USER` with `whoami`. Prefer `./install_cron.sh` so the python path is verified.
+
+Step-by-step (start / check / stop / troubleshooting) is also in
+**[HOW_TO_RUN.md](HOW_TO_RUN.md)** under *Keep the nodes held automatically (cron)*.
+
 ## Configuration (`config.yaml`)
 
 | Field | Meaning |
@@ -201,6 +383,7 @@ Every run also writes a JSONL log to `runs/run-<timestamp>-<mode>.jsonl`.
 | `health_probe.timeout_s` / `workers` | per-node time budget, and how many nodes to probe in parallel |
 | `health_probe.block_classes` | which probe failures disqualify a node (default `[broken, unreachable]` — `access` is not blocking) |
 | `policy.default_duration_hours` / `default_horizon_days` | fallback limits for pools that set no `reservation_duration_limit` / `furthest_future_reservation` (keeps greedy fill bounded) |
+| `team_booking.assignments` | `book_team.py` map: `{cred: default\|<N>, node: "<name>"}`. `default` = `AMD_EMAIL`; `<N>` = `CRED_<N>_*` in `.env`. Each key books **only** that node. |
 
 ### Adding a teammate
 

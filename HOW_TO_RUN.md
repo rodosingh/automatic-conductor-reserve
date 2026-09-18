@@ -69,6 +69,11 @@ python cli.py status --active_n_healthy --commit  # denylist + release those (st
 python cli.py denylist                    # show the denylisted nodes being skipped
 python cli.py allow <node>                # re-enable a node (just remove it from the denylist)
 python cli.py allow <node> --commit       # re-enable AND reserve it, so step 8 can re-test it live
+
+# 10) TEAM BOOKING + CRON — one key per node, renewed every 15 min
+python book_team.py                       # dry-run first
+python book_team.py --commit              # book once now
+./install_cron.sh                         # install the every-15-min job (see cron section)
 ```
 
 **Reserve a single node from `status`:** pick a free & healthy node and run
@@ -274,8 +279,10 @@ python app.py               # open http://127.0.0.1:5057
 > The web app commits **all** configured pools together (no per-pool button). For per-pool
 > commits, use the CLI `--pool` flag shown above.
 
-> `python` here = the base conda Python (`~/miniconda3/bin/python`) where the SDK is
-> installed. If `python` isn’t that by default, use `~/miniconda3/bin/python cli.py …`.
+> `python` here = the interpreter that has `conductor_sdk`. On this machine that is the
+> venv at `~/conductor-venv/bin/python` (what `install_cron.sh` uses). Activate it with
+> `source ~/conductor-venv/bin/activate`, or call it by full path. If you installed into
+> conda instead, use that interpreter (`which python` / `CONDUCTOR_PYTHON`).
 
 ### What gets reserved (behavior notes)
 
@@ -313,6 +320,27 @@ Setup:
   a node under `team_booking.assignments` (`cred: default` = your `AMD_EMAIL`; `cred: <N>` =
   `CRED_<N>`). Every assigned node must also appear in an eligible pool's `only_nodes`.
 
+```yaml
+# config.yaml (excerpt)
+reservation:
+  users:
+    - "teammate1@amd.com"
+    - "teammate2@amd.com"
+team_booking:
+  assignments:
+    - {cred: 1,       node: "<node-for-cred-1>"}
+    - {cred: 2,       node: "<node-for-cred-2>"}
+    # - {cred: default, node: "<your-extra-node>"}
+```
+
+```yaml
+# .env (excerpt) — never commit
+CRED_1_EMAIL=teammate1@amd.com
+CRED_1_SECRET=<teammate1-api-key>
+CRED_2_EMAIL=teammate2@amd.com
+CRED_2_SECRET=<teammate2-api-key>
+```
+
 ```bash
 cd ~/automatic-conductor-reserve
 
@@ -332,51 +360,156 @@ python book_team.py --commit --probe
 
 #### Keep the nodes held automatically (cron)
 
-Each run only grabs time that is *free right now*, so to hold the nodes you just re-run
-`book_team.py --commit` on a schedule. A cron job every 30 min does that. There are three
-things you'll do: **start it**, **check it**, **stop it**.
+Each `book_team.py` run only grabs time that is *free right now*, so to hold the assigned
+nodes you re-run `book_team.py --commit` on a schedule. The repo installer puts a **user
+crontab** job on **every 15 minutes** (`:00`, `:15`, `:30`, `:45` of every hour).
 
-**1. Start it** — add one line to your crontab. Replace `USER` with your username
-(`whoami`), and make sure the python path is yours (`which python`).
+There are three things you'll do: **start it**, **check it**, **stop it**. Re-running the
+installer is safe (it replaces the previous `book_team.py` job only).
+
+**Prerequisites** (already true if you can run `python book_team.py --commit` by hand):
+
+- this repo checked out, with `config.yaml` + `.env` (mode 600) in the repo directory
+- `team_booking.assignments` filled in, matching `CRED_<N>_*` (or `default`) in `.env`
+- `conductor_sdk` installed in the Python that cron will call
+  (default: `~/conductor-venv/bin/python`)
+- the `cron` daemon running on this machine
+
+##### 1. Start it
+
+From the repo:
 
 ```bash
-# opens nothing — this appends the job and saves. Runs every 30 min.
-( crontab -l 2>/dev/null; \
-  echo '*/30 * * * * cd /home/USER/automatic-conductor-reserve && /home/USER/miniconda3/bin/python book_team.py --commit >> /home/USER/book_team.log 2>&1' \
-) | crontab -
+cd ~/automatic-conductor-reserve
+chmod +x install_cron.sh
+./install_cron.sh
 ```
 
-Then make sure the cron **service** is actually running (on WSL it usually isn't until you
-start it — the job above will silently never fire otherwise):
+That script:
+
+1. Resolves the repo directory from its own path (so it still works if you cloned elsewhere).
+2. Checks that `book_team.py` exists and that the Python binary is executable.
+3. Strips any previous `book_team.py` / `automatic-conductor-reserve: book assigned` crontab
+   lines, then writes the new job. **Other crontab entries are left alone.**
+4. Prints the installed crontab and whether the cron daemon is alive.
+
+Default crontab line it writes (`USER` = your username):
+
+```
+# automatic-conductor-reserve: book assigned team nodes every 15 min
+# python env: /home/USER/conductor-venv/bin/python
+*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1
+```
+
+That runner **pins the venv**: it sets `VIRTUAL_ENV`, puts `$VIRTUAL_ENV/bin` first on `PATH`,
+unsets `PYTHONHOME`/`PYTHONPATH`, and execs that python (not `/usr/bin/python3`). Bare
+`python` under cron would be system Python, which does **not** have `conductor_sdk`.
+`install_cron.sh` refuses to install unless `$PYTHON -c 'import conductor_sdk'` succeeds.
+
+**Installer environment overrides** — export them for that one command, or put them in the
+shell before running the script:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CONDUCTOR_PYTHON` | `$HOME/conductor-venv/bin/python` | interpreter with `conductor_sdk` (baked into crontab) |
+| `CONDUCTOR_VENV` | `$HOME/conductor-venv` | venv root; runner sets `VIRTUAL_ENV` from this |
+| `BOOK_TEAM_LOG` | `$HOME/book_team.log` | appended stdout + stderr of every tick |
+| `BOOK_TEAM_LOCK` | `$HOME/.cache/automatic-conductor-reserve/book_team.lock` | `flock` file; overlapping ticks skip |
+
+```bash
+CONDUCTOR_PYTHON=/path/to/python \
+BOOK_TEAM_LOG=$HOME/book_team.log \
+./install_cron.sh
+```
+
+**Make sure the cron service is actually running.** On WSL it usually isn't until you start
+it — the job above will silently never fire otherwise:
 
 ```bash
 pgrep -x cron >/dev/null && echo "cron running" || sudo service cron start
 ```
 
-> Why the line looks the way it does: cron runs with a bare environment starting in your home
-> dir, so the job must `cd` into the project (it reads `config.yaml` + `.env` from the current
-> dir) and call python by its **full path** (cron has no conda on `PATH`). `>> …book_team.log
-> 2>&1` appends every run's output to a log so you can see what happened.
+> Why the line looks the way it does:
+>
+> - cron starts with a **bare environment** (no activated venv, often `PATH=/usr/bin:/bin`).
+>   Bare `python` would be `/usr/bin/python3` and fail with `ModuleNotFoundError: conductor_sdk`.
+>   So the crontab bakes `CONDUCTOR_PYTHON`/`CONDUCTOR_VENV`, and `run_book_team_cron.sh`
+>   sets `VIRTUAL_ENV`, puts the venv `bin` first on `PATH`, unsets `PYTHONHOME`/`PYTHONPATH`,
+>   `cd`s into the repo (for `config.yaml` + `.env`), logs `sys.executable`, then execs that
+>   interpreter on `book_team.py --commit`.
+> - The runner `flock`s a **user-owned** lock under `~/.cache/` (not shared `/tmp`). If a
+>   previous tick is still running, this tick logs `skipped: previous run still holds …` and
+>   exits 0 instead of stacking a second `--commit`.
+> - `>> ~/book_team.log 2>&1` appends every run so you can see which python ran, bookings,
+>   auth failures, and "nothing free" lines without mail from cron.
+> - There is **no `--probe`**. Adding it makes each tick SSH every assigned node and will
+>   often push a run past 15 minutes. If you want it, edit `run_book_team_cron.sh`.
 
-**2. Check it** — confirm the job is registered and watch what it books.
+**Manual install (no script)** — same job, pasted yourself. Replace `USER` with `whoami`:
 
 ```bash
-crontab -l                     # show the installed job (should contain the `cd … &&` line)
-tail -f ~/book_team.log        # live: what each run books; Ctrl-C to stop watching (job keeps running)
-tail -n 40 ~/book_team.log     # just the last run
+( crontab -l 2>/dev/null | grep -v -E 'book_team\.py|automatic-conductor-reserve: book assigned|run_book_team_cron\.sh|python env:' || true; \
+  echo '# automatic-conductor-reserve: book assigned team nodes every 15 min'; \
+  echo '# python env: /home/USER/conductor-venv/bin/python'; \
+  echo '*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1' \
+) | crontab -
 ```
 
-To force a run right now instead of waiting for the next :00/:30, just run the command yourself:
+##### 2. Check it
 
 ```bash
-cd ~/automatic-conductor-reserve && python book_team.py --commit
+crontab -l                     # show the installed job (must contain `run_book_team_cron.sh` and `CONDUCTOR_PYTHON`)
+tail -f ~/book_team.log        # live: what each run books; Ctrl-C stops watching (job keeps running)
+tail -n 80 ~/book_team.log     # just the last run(s)
+ls -lt runs/ | head            # JSONL artifacts the engine writes per commit
 ```
 
-**3. Stop it** — two options:
+A healthy tick looks like:
+
+```
+===== 2026-09-18T06:45:00Z =====
+python: /home/USER/conductor-venv/bin/python
+prefix: /home/USER/conductor-venv
+conductor_sdk: /home/USER/conductor-venv/lib/python3.10/site-packages/conductor_sdk/__init__.py
+=== book_team.py [COMMIT] — N assignment(s) ===
+
+[cred 1] teammate1@amd.com  ->  <node>
+  authenticated as teammate1@amd.com
+  node <node>: K reservation(s)  window MM-DD HH:MM -> MM-DD HH:MM UTC  shared_with=U user(s)
+    - created: <reservation-id>
+
+[cred 2] teammate2@amd.com  ->  <other-node>
+  authenticated as teammate2@amd.com
+  node <other-node>: nothing free to book right now (0 reservations)
+
+=== done (COMMIT) ===
+```
+
+How to read it:
+
+- `python:` / `prefix:` — must be `~/conductor-venv`, **not** `/usr/bin/python3`. If it isn't,
+  the crontab `CONDUCTOR_PYTHON` is wrong; re-run `./install_cron.sh`.
+- `authenticated as …` — that identity's API key worked.
+- `created:` / other status tags — the engine actually wrote reservations this tick.
+- `nothing free to book right now` — **normal**. That node is already held through the
+  pool horizon; later ticks pick up time as other reservations expire. Exit code is still 0.
+- `AUTH FAILED:` — bad/expired key, wrong email, or network. That assignment is skipped;
+  others still run (each identity is a subprocess).
+- No new lines in the log after a quarter-hour → cron daemon is down, the crontab line is
+  missing, or `flock` is holding because a previous run is stuck (`lsof ~/.cache/automatic-conductor-reserve/book_team.lock`).
+
+To force a run **right now** instead of waiting for the next `:00` / `:15` / `:30` / `:45`:
 
 ```bash
-crontab -e        # opens your crontab in an editor: delete the book_team line, save, quit
-                  # (removes ONLY this job, leaves any others you have)
+# same interpreter + env cron uses:
+~/automatic-conductor-reserve/run_book_team_cron.sh
+```
+
+##### 3. Stop it
+
+```bash
+crontab -e        # opens your crontab in an editor: delete the book_team comment + line,
+                  # save, quit. Removes ONLY this job; leaves any others you have.
 
 crontab -r        # nuclear: removes your ENTIRE crontab (every job). Use only if this is the
                   # only cron job you have.
@@ -384,11 +517,25 @@ crontab -r        # nuclear: removes your ENTIRE crontab (every job). Use only i
 
 Stopping the cron does **not** cancel anything already booked — the reservations you already
 hold stay until their end time; you simply stop *renewing* them. To also release held nodes,
-use `python cli.py cancel-small-window` / the Conductor web UI.
+use `python cli.py cancel-small-window --commit` / the Conductor web UI.
 
-Nodes with no free time in the horizon simply book nothing that run and are caught as time
-opens. `book_team.py` reuses the same engine as `cli.py run`, so the GPU/health/horizon rules
-above all apply per node.
+##### What each tick actually does
+
+- Loads `.env` (`AMD_EMAIL`, `ATS_SECRET`, `CRED_<N>_*`, `VERIFY_CERTS`) and
+  `config.yaml` (`team_booking.assignments`, `reservation.users`, pools, policy).
+- For each assignment: spawn a subprocess, set `AMD_EMAIL`/`ATS_SECRET` to that identity,
+  call the same engine as `cli.py run --node <that-node> --commit`.
+- Window filter **off**, post-run fragmented cancel **off**, SSH probe **off** (unless you
+  add `--probe` to the crontab).
+- Nodes with no free time in the horizon book nothing that run and are caught as time opens.
+- GPU / eligibility / denylist / pool-horizon rules from `cli.py run` still apply per node.
+
+Re-installing after you change the python path, log file, or repo location:
+
+```bash
+./install_cron.sh          # replaces the previous book_team job with the new paths
+crontab -l                 # confirm
+```
 
 ---
 
@@ -448,7 +595,11 @@ Edit `config.yaml`:
 - `pools[]` — they can only successfully reserve pools their teams can access; the server
   will report “lack of access” in the results for pools they can’t.
 
-Then they run exactly as in **Section A** (`plan` first, then `run --commit`).
+Then they run exactly as in **Section A** (`plan` first, then `run --commit`). To hold
+**assigned** team nodes on a schedule, they fill in `team_booking.assignments` + `CRED_*` in
+`.env`, dry-run `python book_team.py`, commit once, then `./install_cron.sh` (same as
+*Keep the nodes held automatically (cron)* above). `CONDUCTOR_PYTHON` must point at **their**
+interpreter if it isn't `~/conductor-venv/bin/python`.
 
 > **Reproducibility note:** everything is portable except the two secrets in `.env`.
 > Never put `.env` in git or share it — it’s already in `.gitignore`. Ship the code; each
@@ -472,4 +623,11 @@ Then they run exactly as in **Section A** (`plan` first, then `run --commit`).
 | A node you can reach shows `ssh: connection timed out` | Not on the internal network/VPN, or the node needs a jump host the probe doesn't use. Raise `health_probe.timeout_s`, or exclude it. |
 | `rocm-smi shows 0 GPUs` | Real fault — the GPUs have fallen off the bus on that node. Correctly treated as unhealthy. |
 | `docker ps failed` | Docker daemon is down, or your user isn't in the `docker` group on that node. |
-| `ModuleNotFoundError: conductor_sdk` | SDK not installed in the Python you’re running — use `~/miniconda3/bin/python`, or run from the project dir / set `PYTHONPATH=~/automatic-conductor-reserve`. |
+| `ModuleNotFoundError: conductor_sdk` | SDK not installed in the Python you’re running — use `~/conductor-venv/bin/python` (or set `CONDUCTOR_PYTHON` for cron), or run from the project dir / set `PYTHONPATH=~/automatic-conductor-reserve`. |
+| Cron never writes to `~/book_team.log` | Job missing (`crontab -l`), or the **cron daemon is down** (`pgrep -x cron` / `sudo service cron start`). Cron has no venv on `PATH` — the line must use a **full python path**. |
+| `install_cron.sh` → `python not found` | Default is `$HOME/conductor-venv/bin/python`. Point it at yours: `CONDUCTOR_PYTHON=$(which python) ./install_cron.sh`. |
+| Log stuck / ticks skipped | Previous run still holds the lock (`skipped: previous run still holds …` in the log). Check `ps aux \| grep book_team` and `lsof ~/.cache/automatic-conductor-reserve/book_team.lock`. |
+| `AUTH FAILED` in the log | That identity's `CRED_<N>_EMAIL`/`SECRET` (or `AMD_EMAIL`/`ATS_SECRET`) is wrong or regenerated. Other assignments still run. |
+| `nothing free to book right now` every tick | Normal while the node is held through the pool horizon. Not a failure — wait for a gap, or inspect with `python cli.py status --reserved`. |
+| `no team_booking.assignments in config.yaml` | Add the `team_booking.assignments` list (see `config.yaml` comments / README). |
+| `missing credential 'N' in .env` | Add `CRED_<N>_EMAIL` and `CRED_<N>_SECRET` to `.env` (mode 600). `cred: default` needs `AMD_EMAIL`/`ATS_SECRET`. |
