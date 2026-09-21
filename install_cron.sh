@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install (or replace) the book_team.py crontab entry.
-# Every 15 minutes: run_book_team_cron.sh → conductor-venv python book_team.py --commit
+# On a schedule (default every 15 min): run_book_team_cron.sh → venv python book_team.py --commit
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,6 +9,15 @@ LOCK_FILE="${BOOK_TEAM_LOCK:-$HOME/.cache/automatic-conductor-reserve/book_team.
 VENV="${CONDUCTOR_VENV:-$HOME/conductor-venv}"
 PYTHON="${CONDUCTOR_PYTHON:-$VENV/bin/python}"
 RUNNER="$REPO_DIR/run_book_team_cron.sh"
+
+# How often to run. Set BOOK_TEAM_INTERVAL_MIN=N for an every-N-minutes cadence (default 15),
+# or BOOK_TEAM_SCHEDULE="<5-field cron>" to override the whole schedule (e.g. "0 * * * *").
+INTERVAL_MIN="${BOOK_TEAM_INTERVAL_MIN:-55}"
+if [[ -z "${BOOK_TEAM_SCHEDULE:-}" && ! "$INTERVAL_MIN" =~ ^[0-9]+$ ]]; then
+  echo "error: BOOK_TEAM_INTERVAL_MIN must be a positive integer (got '$INTERVAL_MIN')" >&2
+  exit 1
+fi
+SCHEDULE="${BOOK_TEAM_SCHEDULE:-*/${INTERVAL_MIN} * * * *}"
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "error: python not found or not executable: $PYTHON" >&2
@@ -41,9 +50,9 @@ PY
 
 # Bake the interpreter into the crontab so cron does not depend on PATH or a login shell.
 # flock lives inside the runner (user-owned lockfile; skipped ticks are logged).
-JOB="# automatic-conductor-reserve: book assigned team nodes every 15 min
+JOB="# automatic-conductor-reserve: book assigned team nodes (${SCHEDULE})
 # python env: ${PYTHON}
-*/15 * * * * CONDUCTOR_PYTHON=${PYTHON} CONDUCTOR_VENV=${VENV} BOOK_TEAM_LOCK=${LOCK_FILE} ${RUNNER} >> ${LOG_FILE} 2>&1"
+${SCHEDULE} CONDUCTOR_PYTHON=${PYTHON} CONDUCTOR_VENV=${VENV} BOOK_TEAM_LOCK=${LOCK_FILE} ${RUNNER} >> ${LOG_FILE} 2>&1"
 
 # Replace any previous book_team.py job; keep everything else.
 {
@@ -52,7 +61,7 @@ JOB="# automatic-conductor-reserve: book assigned team nodes every 15 min
 } | crontab -
 
 echo
-echo "cron job installed (every 15 min):"
+echo "cron job installed (schedule: ${SCHEDULE}):"
 echo "  runner: $RUNNER"
 echo "  python: $PYTHON"
 echo "  lock:   $LOCK_FILE"

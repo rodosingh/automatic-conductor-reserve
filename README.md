@@ -234,7 +234,9 @@ that is what the cron job is for.
 ### Cron: hold assigned nodes every 15 minutes
 
 `install_cron.sh` installs a user crontab entry that re-runs
-`python book_team.py --commit` every 15 minutes (`:00`, `:15`, `:30`, `:45`).
+`python book_team.py --commit` every 15 minutes (`:00`, `:15`, `:30`, `:45`). Change the
+cadence with `BOOK_TEAM_INTERVAL_MIN` (every N minutes) or `BOOK_TEAM_SCHEDULE` (a full
+cron expression) — see *Installer environment overrides* below.
 
 #### Start
 
@@ -286,6 +288,8 @@ install unless that python can `import conductor_sdk`. Each tick logs `sys.execu
 |---|---|---|
 | `CONDUCTOR_PYTHON` | `$HOME/conductor-venv/bin/python` | interpreter that has `conductor_sdk` (baked into crontab) |
 | `CONDUCTOR_VENV` | `$HOME/conductor-venv` | venv root; runner sets `VIRTUAL_ENV` from this |
+| `BOOK_TEAM_INTERVAL_MIN` | `15` | run every N minutes → `*/N * * * *` |
+| `BOOK_TEAM_SCHEDULE` | *(unset)* | full 5-field cron expression; overrides `BOOK_TEAM_INTERVAL_MIN` (e.g. `0 * * * *`) |
 | `BOOK_TEAM_LOG` | `$HOME/book_team.log` | where each run's output is appended |
 | `BOOK_TEAM_LOCK` | `$HOME/.cache/automatic-conductor-reserve/book_team.lock` | `flock` file so overlapping ticks skip |
 

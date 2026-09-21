@@ -413,8 +413,13 @@ shell before running the script:
 |---|---|---|
 | `CONDUCTOR_PYTHON` | `$HOME/conductor-venv/bin/python` | interpreter with `conductor_sdk` (baked into crontab) |
 | `CONDUCTOR_VENV` | `$HOME/conductor-venv` | venv root; runner sets `VIRTUAL_ENV` from this |
+| `BOOK_TEAM_INTERVAL_MIN` | `15` | run every N minutes → `*/N * * * *` |
+| `BOOK_TEAM_SCHEDULE` | *(unset)* | full 5-field cron expression; overrides `BOOK_TEAM_INTERVAL_MIN` (e.g. `0 * * * *` = hourly) |
 | `BOOK_TEAM_LOG` | `$HOME/book_team.log` | appended stdout + stderr of every tick |
 | `BOOK_TEAM_LOCK` | `$HOME/.cache/automatic-conductor-reserve/book_team.lock` | `flock` file; overlapping ticks skip |
+
+> `*/N` restarts each hour, so intervals that don't divide 60 (e.g. 40) jump back to `:00`
+> at the top of the hour. Use `BOOK_TEAM_SCHEDULE` for those.
 
 ```bash
 CONDUCTOR_PYTHON=/path/to/python \
