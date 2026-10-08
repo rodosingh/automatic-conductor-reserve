@@ -497,7 +497,8 @@ How to read it:
 - `authenticated as …` — that identity's API key worked.
 - `created:` / other status tags — the engine actually wrote reservations this tick.
 - `nothing free to book right now` — **normal**. That node is already held through the
-  pool horizon; later ticks pick up time as other reservations expire. Exit code is still 0.
+  pool horizon (new time at the horizon is booked only once a full block has opened); later
+  ticks pick up time as other reservations expire. Exit code is still 0.
 - `AUTH FAILED:` — bad/expired key, wrong email, or network. That assignment is skipped;
   others still run (each identity is a subprocess).
 - No new lines in the log after a quarter-hour → cron daemon is down, the crontab line is

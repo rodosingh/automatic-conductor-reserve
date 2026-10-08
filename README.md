@@ -458,7 +458,9 @@ are additive — none remove anyone.
   list** — with back-to-back reservations of up to `pool.reservation_duration_limit`, each
   **ending by `now + pool.furthest_future`** (a hard server cap on `date_end`), rounded to
   10-minute marks. Pools that cap at 48h yield ~one block ending at the 48h mark; pools with
-  no limit chain out to `policy.default_horizon_days`.
+  no limit chain out to `policy.default_horizon_days`. Time that opens up at the moving horizon
+  is booked only as a full-length block (or one starting within the hour, on 48h/48h pools),
+  so repeated runs add whole blocks rather than an hourly sliver.
 - **Window filter (default on):** after planning a node, drop it unless our total hold
   (existing + planned) clears `min_continuous_hours` continuous **or** keeps inter-block gaps
   under `max_gap_hours`. Bypass with `--include-small-window` or an explicit `--node`.

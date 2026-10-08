@@ -15,6 +15,11 @@ from .models import NodeInfo, PlanItem, PoolInfo
 
 LOG = logging.getLogger("conductor_reserve.scheduler")
 
+# At the moving horizon, a block shorter than the duration limit is still booked when it
+# starts within this much of the earliest allowed start. Must cover the cron interval, so
+# consecutive blocks on pools whose horizon ~= duration limit (48h/48h) stay back-to-back.
+EDGE_SLACK = timedelta(hours=1)
+
 
 def _round_down(dt: datetime, minutes: int) -> datetime:
     dt = dt.replace(second=0, microsecond=0)
@@ -72,18 +77,25 @@ def plan_node(
         ))
 
     # Tile free gaps between existing reservations, from `earliest` up to the horizon, with
-    # reservations of at most dur_limit. Every block must END by `horizon` (the hard cap),
-    # so a node busy until near the horizon yields only a short tail; a node free now yields
-    # a full dur_limit block; where the horizon is far (null-limit pools) this chains many.
+    # reservations of at most dur_limit. Every block must END by `horizon` (the hard cap);
+    # a node free now yields a full dur_limit block; where the horizon is far (null-limit
+    # pools) this chains many. The last gap is open-ended: the horizon moves later on every
+    # run, so booking whatever fits there now would add a short sliver per run. There we
+    # book only full dur_limit blocks, or a block starting within EDGE_SLACK of `earliest`
+    # (waiting longer would leave the node idle; a 48h/48h pool never fits a full block).
     cursor = earliest
     for bs, be in busy + [(horizon, horizon)]:
         gap_end = min(_round_down(bs, rnd), horizon)
+        open_ended = bs >= horizon  # the sentinel; real reservations start before horizon
         while cursor < gap_end:
             if max_per_node is not None and len(items) >= int(max_per_node):
                 return items
             end = _round_down(min(cursor + timedelta(seconds=dur_limit), gap_end), rnd)
             if (end - cursor).total_seconds() < min_dur:
                 break
+            if (open_ended and (end - cursor).total_seconds() < dur_limit
+                    and cursor > earliest + EDGE_SLACK):
+                break  # wait until the horizon has moved far enough for a full block
             add(cursor, end)
             cursor = end
         if be > cursor:
