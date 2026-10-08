@@ -2,6 +2,7 @@
 .env
 config.yaml
 denylist.yaml
+entity_data.csv
 
 # run artifacts
 runs/
