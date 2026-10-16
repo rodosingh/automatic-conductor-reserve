@@ -398,7 +398,7 @@ Default crontab line it writes (`USER` = your username):
 ```
 # automatic-conductor-reserve: book assigned team nodes every 15 min
 # python env: /home/USER/conductor-venv/bin/python
-*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1
+*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock BOOK_TEAM_RUNS_RETENTION_DAYS=2 /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1
 ```
 
 That runner **pins the venv**: it sets `VIRTUAL_ENV`, puts `$VIRTUAL_ENV/bin` first on `PATH`,
@@ -417,6 +417,7 @@ shell before running the script:
 | `BOOK_TEAM_SCHEDULE` | *(unset)* | full 5-field cron expression; overrides `BOOK_TEAM_INTERVAL_MIN` (e.g. `0 * * * *` = hourly) |
 | `BOOK_TEAM_LOG` | `$HOME/book_team.log` | appended stdout + stderr of every tick |
 | `BOOK_TEAM_LOCK` | `$HOME/.cache/automatic-conductor-reserve/book_team.lock` | `flock` file; overlapping ticks skip |
+| `BOOK_TEAM_RUNS_RETENTION_DAYS` | `2` | each tick prunes `runs/*.jsonl` older than this many days (`0` keeps nothing) |
 
 > `*/N` restarts each hour, so intervals that don't divide 60 (e.g. 40) jump back to `:00`
 > at the top of the hour. Use `BOOK_TEAM_SCHEDULE` for those.
@@ -456,7 +457,7 @@ pgrep -x cron >/dev/null && echo "cron running" || sudo service cron start
 ( crontab -l 2>/dev/null | grep -v -E 'book_team\.py|automatic-conductor-reserve: book assigned|run_book_team_cron\.sh|python env:' || true; \
   echo '# automatic-conductor-reserve: book assigned team nodes every 15 min'; \
   echo '# python env: /home/USER/conductor-venv/bin/python'; \
-  echo '*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1' \
+  echo '*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock BOOK_TEAM_RUNS_RETENTION_DAYS=2 /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1' \
 ) | crontab -
 ```
 
@@ -549,6 +550,9 @@ immediately.
   call the same engine as `cli.py run --node <that-node> --commit`.
 - Window filter **off**, post-run fragmented cancel **off**, SSH probe **off** (unless you
   add `--probe` to the crontab).
+- Before booking, prunes `runs/*.jsonl` older than `BOOK_TEAM_RUNS_RETENTION_DAYS` (default
+  2) so the JSONL artifacts don't grow without bound; a count is logged when anything is
+  removed. A cleanup error can never block the booking run.
 - Nodes with no free time in the horizon book nothing that run and are caught as time opens.
 - GPU / eligibility / denylist / pool-horizon rules from `cli.py run` still apply per node.
 

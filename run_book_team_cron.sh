@@ -33,5 +33,17 @@ if ! flock -n "$lock_fd"; then
 fi
 
 echo "===== $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+
+# Prune old run artifacts so runs/ doesn't grow without bound (default: older than 2 days).
+# Kept resilient: a cleanup hiccup must never abort the booking run below.
+RETENTION_DAYS="${BOOK_TEAM_RUNS_RETENTION_DAYS:-2}"
+if [[ "$RETENTION_DAYS" =~ ^[0-9]+$ && -d "$REPO_DIR/runs" ]]; then
+  pruned=$(find "$REPO_DIR/runs" -maxdepth 1 -type f -name '*.jsonl' \
+             -mmin "+$((RETENTION_DAYS * 1440))" -print -delete 2>/dev/null | wc -l || true)
+  if [[ "${pruned:-0}" -gt 0 ]]; then
+    echo "pruned ${pruned} run artifact(s) older than ${RETENTION_DAYS}d from runs/"
+  fi
+fi
+
 "$PYTHON" -c 'import sys, conductor_sdk; print("python:", sys.executable); print("prefix:", sys.prefix); print("conductor_sdk:", conductor_sdk.__file__)'
 exec "$PYTHON" book_team.py --commit "$@"

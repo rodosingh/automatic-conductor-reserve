@@ -264,7 +264,7 @@ Exact crontab (paths resolved from `$HOME` and this repo):
 ```
 # automatic-conductor-reserve: book assigned team nodes every 15 min
 # python env: /home/USER/conductor-venv/bin/python
-*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1
+*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock BOOK_TEAM_RUNS_RETENTION_DAYS=2 /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1
 ```
 
 Cron does **not** inherit your shell venv. Bare `python` under cron is `/usr/bin/python3` (no
@@ -278,8 +278,9 @@ install unless that python can `import conductor_sdk`. Each tick logs `sys.execu
 |---|---|
 | `*/15 * * * *` | every 15 minutes |
 | `CONDUCTOR_PYTHON` / `CONDUCTOR_VENV` | baked into the crontab so the runner never falls back to system python |
-| `run_book_team_cron.sh` | `cd`s into the repo, `flock`s, then `book_team.py --commit` |
+| `run_book_team_cron.sh` | `cd`s into the repo, `flock`s, prunes old `runs/` artifacts, then `book_team.py --commit` |
 | `BOOK_TEAM_LOCK` | user-owned lock so overlapping ticks skip instead of stacking |
+| `BOOK_TEAM_RUNS_RETENTION_DAYS` | each tick deletes `runs/*.jsonl` older than this many days (default 2) |
 | `>> ~/book_team.log 2>&1` | append stdout + stderr of every run |
 
 #### Installer environment overrides
@@ -292,9 +293,11 @@ install unless that python can `import conductor_sdk`. Each tick logs `sys.execu
 | `BOOK_TEAM_SCHEDULE` | *(unset)* | full 5-field cron expression; overrides `BOOK_TEAM_INTERVAL_MIN` (e.g. `0 * * * *`) |
 | `BOOK_TEAM_LOG` | `$HOME/book_team.log` | where each run's output is appended |
 | `BOOK_TEAM_LOCK` | `$HOME/.cache/automatic-conductor-reserve/book_team.lock` | `flock` file so overlapping ticks skip |
+| `BOOK_TEAM_RUNS_RETENTION_DAYS` | `2` | each tick prunes `runs/*.jsonl` older than this many days (`0` keeps nothing) |
 
 ```bash
 CONDUCTOR_PYTHON=/path/to/python BOOK_TEAM_LOG=/tmp/book_team.log ./install_cron.sh
+BOOK_TEAM_RUNS_RETENTION_DAYS=7 ./install_cron.sh   # keep a week of run artifacts instead
 ```
 
 #### Check
@@ -363,7 +366,7 @@ If you would rather paste the line yourself:
 ( crontab -l 2>/dev/null | grep -v -E 'book_team\.py|automatic-conductor-reserve: book assigned|run_book_team_cron\.sh|python env:' || true; \
   echo '# automatic-conductor-reserve: book assigned team nodes every 15 min'; \
   echo '# python env: /home/USER/conductor-venv/bin/python'; \
-  echo '*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1' \
+  echo '*/15 * * * * CONDUCTOR_PYTHON=/home/USER/conductor-venv/bin/python CONDUCTOR_VENV=/home/USER/conductor-venv BOOK_TEAM_LOCK=/home/USER/.cache/automatic-conductor-reserve/book_team.lock BOOK_TEAM_RUNS_RETENTION_DAYS=2 /home/USER/automatic-conductor-reserve/run_book_team_cron.sh >> /home/USER/book_team.log 2>&1' \
 ) | crontab -
 ```
 
