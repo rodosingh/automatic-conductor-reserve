@@ -9,6 +9,7 @@ official **Conductor Python SDK** — no browser, no cookies, nothing that expir
 
 - **[HOW_TO_RUN.md](HOW_TO_RUN.md)** — step-by-step run guide, team booking, cron, and how to hand it to colleagues.
 - **[DISCOVERY_LOG.md](DISCOVERY_LOG.md)** — the full build story (every dead-end, fix, learning).
+- **[CHANGELOG.md](CHANGELOG.md)** — rationale for notable changes (**why**, not just what). New work lands on a branch with its reason recorded here, then merges via PR.
 
 ## Setup
 
