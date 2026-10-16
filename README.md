@@ -201,7 +201,9 @@ to exactly one node:
 
 For each assignment it authenticates as that identity **in its own subprocess** (credentials
 never bleed between bookings) and reserves **only that node's currently-free window**, shared
-with the group in `reservation.users`. Every assigned node must also appear in an eligible
+with the group in `reservation.users`. All the workers from one run write into a **single
+combined** `runs/run-<ts>-team-<mode>.jsonl` (one record set per assignment, aggregate summary
+on the first line) rather than one file each. Every assigned node must also appear in an eligible
 pool's `only_nodes`.
 
 ```yaml

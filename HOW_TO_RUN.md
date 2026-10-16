@@ -553,6 +553,9 @@ immediately.
 - Before booking, prunes `runs/*.jsonl` older than `BOOK_TEAM_RUNS_RETENTION_DAYS` (default
   2) so the JSONL artifacts don't grow without bound; a count is logged when anything is
   removed. A cleanup error can never block the booking run.
+- All assignments in one tick write into a **single** combined
+  `runs/run-<ts>-team-<mode>.jsonl` (one record set per assignment, aggregate summary first),
+  so a tick produces one file, not one per teammate.
 - Nodes with no free time in the horizon book nothing that run and are caught as time opens.
 - GPU / eligibility / denylist / pool-horizon rules from `cli.py run` still apply per node.
 

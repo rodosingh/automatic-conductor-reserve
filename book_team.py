@@ -25,9 +25,11 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 from conductor_reserve import creds
 from conductor_reserve.config import load_config
+from conductor_reserve.notify import RUNS_DIR, combine_team_run_log
 
 
 def _cred_env(label: str) -> tuple[str, str]:
@@ -109,6 +111,13 @@ def main() -> int:
 
     mode = "COMMIT" if args.commit else "DRY-RUN"
     print(f"=== book_team.py [{mode}] — {len(items)} assignment(s) ===")
+
+    # One combined run log for the whole tick: every worker appends into this single file
+    # (one record set per assignment) instead of each minting its own run-*.jsonl.
+    tick_mode = "commit" if args.commit else "dryrun"
+    tick_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    tick_log = RUNS_DIR / f"run-{tick_stamp}-team-{tick_mode}.jsonl"
+
     rc = 0
     for a in items:
         label, node = str(a.get("cred")), a.get("node")
@@ -117,6 +126,7 @@ def main() -> int:
         env = dict(os.environ)
         env["AMD_EMAIL"], env["ATS_SECRET"] = email, secret
         env["VERIFY_CERTS"] = os.getenv("VERIFY_CERTS", "false")
+        env["BOOK_TEAM_RUN_LOG"] = str(tick_log)
         cmd = [sys.executable, __file__, "--worker", "--node", node]
         if args.commit:
             cmd.append("--commit")
@@ -124,7 +134,10 @@ def main() -> int:
             cmd.append("--probe")
         p = subprocess.run(cmd, env=env, text=True)
         rc = rc or p.returncode
-    print(f"\n=== done ({mode}) ===")
+
+    # Prepend a single aggregate summary so the web history reads this tick as one entry.
+    combine_team_run_log(tick_log, len(items))
+    print(f"\n=== done ({mode}) — run log: {tick_log.name} ===")
     return rc
 
 
